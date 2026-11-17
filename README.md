@@ -101,7 +101,7 @@ curl -s http://localhost:8787/health
 {"service":"hongguo-web","ok":true,"version":"0.14.7","active":"hongguo","sources":7,"accounts":true}
 ```
 
-发布前还可以跑仓库自带的冒烟脚本：
+启动后还可以跑仓库自带的冒烟脚本：
 
 ```bash
 BASE=http://127.0.0.1:8787 node server/scripts/smoke.mjs
@@ -363,7 +363,7 @@ var spider = {
 - updateUrl 必须是 HTTPS 且返回同一个 id 的源；更新前会跑一次 home + 首条详情自检，失败保留旧版本。按 URL 导入时即使 meta 没写 updateUrl，也会用导入地址作为上游。
 - play 必须返回可直连的 m3u8 / mp4；flv 能识别但没有播放器。返回 parse: 1（需要 webview 嗅探）本服务不支持，会报「需要 webview 嗅探解析」。
 - 分页建议返回 pagecount: hasMore ? page + 1 : page，并明确 hasMore；写死 page + 1 会让前端无限翻页。
-- 除核心方法外还可选实现 feed / rankings / recommendations / rankingBoards / seriesSeasons / danmaku 等，本服务目前只用核心方法。
+- 除核心方法外还可选实现 feed / rankings / recommendations / rankingBoards / seriesSeasons / danmaku 等；目前对 JS 源只调用核心方法，内置红果的季表由服务端自行实现。
 - 不得 import / require，不得访问 Node 内置模块或文件系统。
 
 ## HTTP API
