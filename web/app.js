@@ -1721,7 +1721,11 @@
     } else if (state.playKind === 'hls' && state.quality >= 0 && state.levels[state.quality]) {
       chosen = levelLabel(state.levels[state.quality]);
     }
-    btn.textContent = '清晰度 ' + (chosen || currentResolutionLabel() || '自动');
+    // 手机端按钮空间有限：去掉「（最高）」这类括号说明；完整档位名在菜单里仍可见。
+    var full = chosen || currentResolutionLabel() || '自动';
+    var mobile = !!(mqMobile && mqMobile.matches);
+    var qlabel = mobile ? (String(full).replace(/（[^）]*）/g, '').trim() || '自动') : full;
+    btn.textContent = '清晰度 ' + qlabel;
     btn.classList.toggle('on', multi);
   }
   function buildQualityMenu() {
@@ -3062,7 +3066,7 @@
   // 转回桌面宽度时清掉抽屉状态，避免 body 滚动锁残留
   var mqMobile = (typeof window !== 'undefined' && window.matchMedia) ? window.matchMedia('(max-width: 680px)') : null;
   if (mqMobile) {
-    var onMobileMq = function () { if (!mqMobile.matches) closeMobileMenu(); };
+    var onMobileMq = function () { if (!mqMobile.matches) closeMobileMenu(); updateQualityBtn(); };
     if (mqMobile.addEventListener) mqMobile.addEventListener('change', onMobileMq);
     else if (mqMobile.addListener) mqMobile.addListener(onMobileMq);
   }
