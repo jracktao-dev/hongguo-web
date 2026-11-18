@@ -89,7 +89,11 @@ function requireToken(req, token, url) {
 // 未设 TOKEN 的部署（本机自用最常见）不能让管理接口裸奔到公网：
 // 源导入会把脚本送进 vm 执行，等价于「谁能调谁就能跑代码」，因此这类写操作
 // 只允许内网/回环来源。Docker 端口映射后容器看到的对端是网桥地址（私有），不受影响。
-const ADMIN_WRITE = [/^\/api\/sources(?:\/|$)/, /^\/api\/cache\/clear$/, /^\/api\/alerts\/check$/];
+//
+// 例外：POST /api/sources/active 只是「选择当前源」（顶栏下拉框的普通操作），不执行任何
+// 脚本，因此不算管理写——否则未设 TOKEN 的公网反代部署下，前端一切源就被 403 拦掉。
+// 源导入/删除/更新/自检/日志这些会跑代码或改源包的接口仍然只对内网开放。
+const ADMIN_WRITE = [/^\/api\/sources(?!\/active$)(?:\/|$)/, /^\/api\/cache\/clear$/, /^\/api\/alerts\/check$/];
 
 function isAdminWrite(pathname) {
   return ADMIN_WRITE.some((pattern) => pattern.test(pathname));

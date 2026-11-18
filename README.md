@@ -98,7 +98,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.9","active":"hongguo","sources":7,"accounts":true}
+{"service":"hongguo-web","ok":true,"version":"0.14.10","active":"hongguo","sources":7,"accounts":true}
 ```
 
 启动后还可以跑仓库自带的冒烟脚本：
@@ -164,7 +164,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.9。
+想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.10。
 
 ### 镜像与标签
 
@@ -190,7 +190,7 @@ docker run -d --name hongguo-web \
 | 放大并发播放 | environment.MAX_STREAMS: "12" |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: "1"（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: "Asia/Shanghai" |
-| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.9 |
+| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.10 |
 
 ### 基础
 
@@ -469,7 +469,7 @@ hongguo-web/
 
 ## 安全说明
 
-- **访问口令**：公网部署务必设置 TOKEN；浏览器首次用 `?at=<TOKEN>` 打开，之后前端自动带参。未设置 TOKEN 时，源导入、清缓存、告警检查等管理写接口只接受内网来源。
+- **访问口令**：公网部署务必设置 TOKEN；浏览器首次用 `?at=<TOKEN>` 打开，之后前端自动带参。未设置 TOKEN 时，源导入/删除/更新/自检/日志、清缓存、告警检查等管理写接口只接受内网来源；「切换当前源」是普通操作，不受此限制（顶栏下拉框人人可点）。
 - **反向代理**：只有确认前面是可信代理时才设 TRUST_PROXY=1，否则 X-Forwarded-For 可被伪造。
 - **SSRF**：默认禁止代理内网媒体、禁止 JS 源访问内网；确有需要再分别打开 ALLOW_PRIVATE_MEDIA / ALLOW_PRIVATE_FETCH。
 - **JS 源沙箱**：每源独立 worker_threads，有内存与超时限制，拿不到 Node API；但源代码仍由你导入，请只安装可信来源。
@@ -496,6 +496,7 @@ hongguo-web/
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 :edge；正式版本打 v* 标签并同时推 :版本号 与 :latest。
 
+- **v0.14.10**：`/api/sources/active` 不再按管理写拦截：切换当前源属于普通操作（不执行脚本），未设 TOKEN 的公网反代部署下前端切源不再 403；源导入/删除/更新/自检/日志仍只对内网开放。
 - **v0.14.9**：全项目审计修复：设 TOKEN 时 JS 源 HLS 子清单/分片请求 401、`HEAD /api/media` 上游连接悬挂、`/api/play` 响应泄漏源侧 headers 与上游直链、写接口非对象 body 报 500、追更失败无退避与集数抖动误报、JS 源 URL 垫片不保真、历史封面不走代理、历史弹窗文案、Service Worker 缓存 `/health`、`engines` 版本与重复 CSS。
 - **v0.14.8**：PWA 版本探测：窗口回到前台或重新获得焦点时比对 `/health` 与服务端版本，发现新版本自动整页刷新，常驻 PWA 不再停留在旧界面。
 - **v0.14.7**：手机播放器工具条重排：4 列网格换行，取消横向滚动，关闭/下一集始终可见；≤420px 小字号，≤340px 三列且关闭独占一行；手机端清晰度按钮去掉括号说明。
