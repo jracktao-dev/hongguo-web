@@ -54,11 +54,16 @@ function readBody(req, limit = MAX_BODY) {
 }
 
 function parseJsonBody(text) {
+  let value;
   try {
-    return text ? JSON.parse(text) : {};
+    value = text ? JSON.parse(text) : {};
   } catch {
     throw fail("BAD_JSON", "请求体不是合法 JSON");
   }
+  // 所有写接口的 body 都按对象读取（body.xxx）。JSON 的 null/数组/标量也能解析成功，
+  // 放行后会在各处抛 TypeError 变成 500，这里统一按格式错误处理。
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw fail("BAD_JSON", "请求体必须是 JSON 对象");
+  return value;
 }
 
 function pageOf(q) {
@@ -292,13 +297,16 @@ export function createServer({ provider, sources, catalog, users = null, monitor
             const d = await catalog.detail(fo.source || undefined, fo.id);
             count = (d.episodes || []).length || ((d.lines && d.lines[0] && d.lines[0].episodes) || []).length;
           } catch {
-            continue;
+            count = 0;
           }
           if (count > 0) {
             if (fo.epCount > 0 && count > fo.epCount) {
               updates.push({ source: fo.source, id: fo.id, title: fo.title, cover: fo.cover, epCount: count, prevCount: fo.epCount, added: count - fo.epCount });
             }
             users.touchFollow(u.id, fo.source, fo.id, count);
+          } else {
+            // 上游失败或详情为空也记一次检查时间，否则这个条目每次请求都会重打同一个上游。
+            users.markFollowChecked(u.id, fo.source, fo.id);
           }
         }
       };
@@ -411,9 +419,16 @@ export function createServer({ provider, sources, catalog, users = null, monitor
     ["GET", /^\/api\/hls$/, async ({ req, res, q }) => {
       const target = q.get("u");
       if (!target) throw fail("BAD_INPUT", "缺少 u");
-      // 只转发「源自己在地址里声明的 token」（st），绝不把服务口令写进重写后的分片地址，
-      // 否则每片请求都会把口令送给第三方 CDN（review F1/S5）。
-      await proxyHls(req, res, { url: target, referer: q.get("r") || "", token: q.get("st") || "", ua: q.get("ua") || "" });
+      // st 是「源自己在上游地址里声明的 token」，会原样带给上游 CDN；
+      // at 是本站访问口令，只出现在重写后的本站地址上（上游地址整体作为 u 参数编码，
+      // 口令不会进入上游请求），用于让 hls.js 后续的分片/子清单请求也能通过鉴权。
+      await proxyHls(req, res, {
+        url: target,
+        referer: q.get("r") || "",
+        token: q.get("st") || "",
+        auth: q.get("at") || q.get("token") || "",
+        ua: q.get("ua") || "",
+      });
     }],
 
     // ---- 内置红果：服务端解密流 ----

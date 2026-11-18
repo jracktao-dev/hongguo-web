@@ -76,6 +76,8 @@ function sendFallbackImage(res, reason) {
 // 透传 Range 的视频代理：浏览器只连本站，避免 CORS 与防盗链。
 export async function proxyMedia(req, res, { url, referer, ua }) {
   const image = wantsImage(req, url);
+  // HEAD 必须也用 HEAD 打上游：否则上游返回的 body 没人消费，连接会一直挂到超时。
+  const method = req.method === "HEAD" ? "HEAD" : "GET";
   const userAgent = cleanUa(ua);
   const headers = upstreamHeaders(referer, userAgent ? { "user-agent": userAgent } : null);
   if (req.headers.range) headers.range = boundRange(req.headers.range);
@@ -84,6 +86,7 @@ export async function proxyMedia(req, res, { url, referer, ua }) {
   try {
     // safeFetch 对每次连接和每次重定向都做 DNS 校验，并把连接固定到已校验的地址。
     upstream = await safeFetch(url, {
+      method,
       headers,
       redirect: "follow",
       timeoutMs: 20000,
@@ -135,7 +138,9 @@ export async function proxyMedia(req, res, { url, referer, ua }) {
 }
 
 // HLS 清单重写：把分片与子清单全部改成本站代理地址。
-// token 用于在开了访问口令时把鉴权参数带到后续分片请求（浏览器媒体请求无法带 Authorization 头）。
+// 重写出来的本站地址要带上两类凭据，浏览器媒体请求都带不了自定义头：
+//   token(st) —— 源自己在上游地址里声明的 token，原样转发给上游；
+//   auth(at)  —— 本站访问口令，只出现在本站地址上，用于后续分片请求的鉴权。
 //
 // 判定子清单不能只看 URL 里有没有 "m3u8"：EXT-X-KEY 的 URI 是密钥、EXT-X-MAP 的 URI 是 init 段，
 // 即使地址里带 m3u8 字样也必须当媒体代理。这里按标签语义分三类：
@@ -154,7 +159,7 @@ function classifyManifest(abs, hint) {
   }
 }
 
-export async function proxyHls(req, res, { url, referer, token, ua }) {
+export async function proxyHls(req, res, { url, referer, token, ua, auth = "" }) {
   const userAgent = cleanUa(ua);
   let upstream;
   try {
@@ -180,9 +185,11 @@ export async function proxyHls(req, res, { url, referer, token, ua }) {
     throw fail("UPSTREAM", "上游返回的不是 HLS 清单");
   }
 
+  // auth 是本站的访问口令（at），只写回本站代理地址，不会进入上游 target（u 是编码后的整条上游地址）。
   const suffix =
     (referer ? "&r=" + encodeURIComponent(referer) : "") +
     (token ? "&st=" + encodeURIComponent(token) : "") +
+    (auth ? "&at=" + encodeURIComponent(auth) : "") +
     (userAgent ? "&ua=" + encodeURIComponent(userAgent) : "");
   const rewrite = (raw, hint) => {
     let abs;

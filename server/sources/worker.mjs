@@ -74,6 +74,18 @@ function createBridge(deps) {
   const urlStore = new WeakMap();
   const paramsStore = new WeakMap();
   const paramsCache = new WeakMap();
+  const paramsOwner = new WeakMap();
+
+  // 原生 URL 的 searchParams 是「活的」：改完再取 url.toString() 会带上新参数。
+  // 垫片里的 URLSearchParams 是独立对象，所以每次写操作都同步回所属 URL。
+  function syncParamsToUrl(params) {
+    const owner = paramsOwner.get(params);
+    if (!owner) return;
+    const url = urlStore.get(owner);
+    if (!url) return;
+    url.search = paramsStore.get(params).toString();
+    paramsCache.delete(owner);
+  }
 
   class URLSearchParams {
     constructor(init) {
@@ -92,13 +104,13 @@ function createBridge(deps) {
         throw new Error(String((error && error.message) || error));
       }
     }
-    append(key, value) { paramsStore.get(this).append(String(key), String(value)); }
-    delete(key) { paramsStore.get(this).delete(String(key)); }
+    append(key, value) { paramsStore.get(this).append(String(key), String(value)); syncParamsToUrl(this); }
+    delete(key) { paramsStore.get(this).delete(String(key)); syncParamsToUrl(this); }
     get(key) { return paramsStore.get(this).get(String(key)); }
     getAll(key) { const out = []; paramsStore.get(this).forEach(function (value, name) { if (name === String(key)) out.push(value); }); return out; }
     has(key) { return paramsStore.get(this).has(String(key)); }
-    set(key, value) { paramsStore.get(this).set(String(key), String(value)); }
-    sort() { paramsStore.get(this).sort(); }
+    set(key, value) { paramsStore.get(this).set(String(key), String(value)); syncParamsToUrl(this); }
+    sort() { paramsStore.get(this).sort(); syncParamsToUrl(this); }
     toString() { return paramsStore.get(this).toString(); }
     forEach(callback, thisArg) {
       const self = this;
@@ -132,7 +144,7 @@ function createBridge(deps) {
       }
     }
     get href() { return urlStore.get(this).href; }
-    set href(value) { urlStore.get(this).href = String(value); }
+    set href(value) { urlStore.get(this).href = String(value); paramsCache.delete(this); }
     get origin() { return urlStore.get(this).origin; }
     get protocol() { return urlStore.get(this).protocol; }
     set protocol(value) { urlStore.get(this).protocol = String(value); }
@@ -149,13 +161,14 @@ function createBridge(deps) {
     get pathname() { return urlStore.get(this).pathname; }
     set pathname(value) { urlStore.get(this).pathname = String(value); }
     get search() { return urlStore.get(this).search; }
-    set search(value) { urlStore.get(this).search = String(value); }
+    set search(value) { urlStore.get(this).search = String(value); paramsCache.delete(this); }
     get hash() { return urlStore.get(this).hash; }
     set hash(value) { urlStore.get(this).hash = String(value); }
     get searchParams() {
       let cached = paramsCache.get(this);
       if (!cached) {
         cached = new URLSearchParams(urlStore.get(this).searchParams.toString());
+        paramsOwner.set(cached, this);
         paramsCache.set(this, cached);
       }
       return cached;

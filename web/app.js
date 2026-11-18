@@ -759,8 +759,13 @@
     img.className = 'histcover';
     img.referrerPolicy = 'no-referrer';
     img.loading = 'lazy';
-    img.src = posterUrl(src);
-    img.onerror = function () { img.src = PLACEHOLDER; };
+    var original = src || '';
+    img.src = posterUrl(original);
+    // 与卡片一致：直连失败时再走本站图片代理，防盗链图床的海报才不会一直占位。
+    img.onerror = function () {
+      if (original && img.src.indexOf('/api/media') === -1) img.src = authUrl('/api/media?u=' + encodeURIComponent(original));
+      else if (img.src !== PLACEHOLDER) img.src = PLACEHOLDER;
+    };
     return img;
   }
 

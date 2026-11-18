@@ -62,8 +62,9 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  // 接口与媒体流一律走网络，绝不缓存
-  if (url.pathname.indexOf('/api/') === 0) return;
+  // 接口、媒体流与 /health 一律走网络，绝不缓存：
+  // /health 用来做版本探测，缓存住会让离线/弱网时读到过期版本号。
+  if (url.pathname.indexOf('/api/') === 0 || url.pathname === '/health') return;
 
   // 页面导航：网络优先，离线回落到缓存的 index.html
   if (req.mode === 'navigate') {

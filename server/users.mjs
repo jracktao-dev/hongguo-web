@@ -207,9 +207,16 @@ export class UserStore {
     return { ok: true };
   }
 
+  // 集数只增不减：上游偶发少返回几集时不能把基线降下去，否则下次恢复正常会被误判成「更新」。
   touchFollow(userId, source, vodId, epCount) {
-    this.db.prepare("UPDATE follows SET ep_count = ?, last_checked = ? WHERE user_id = ? AND source = ? AND vod_id = ?")
+    this.db.prepare("UPDATE follows SET ep_count = MAX(ep_count, ?), last_checked = ? WHERE user_id = ? AND source = ? AND vod_id = ?")
       .run(Math.max(0, Math.floor(epCount)), Date.now(), userId, str(source, 64), str(vodId, 128));
+  }
+
+  // 只更新检查时间（取不到集数、上游失败时用），避免每次请求都重打同一个上游。
+  markFollowChecked(userId, source, vodId) {
+    this.db.prepare("UPDATE follows SET last_checked = ? WHERE user_id = ? AND source = ? AND vod_id = ?")
+      .run(Date.now(), userId, str(source, 64), str(vodId, 128));
   }
 
   // ---- 偏好设置（播放倍速，跨设备同步） ----

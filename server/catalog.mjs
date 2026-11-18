@@ -751,13 +751,13 @@ export function createCatalog({ provider, sources }) {
     const userAgent = headerValue(headers, "user-agent").replace(/[\r\n]/g, "").slice(0, 300);
     const encoded = encodeURIComponent(url);
     const proxyBase = type === "hls" ? "/api/hls?u=" : "/api/media?u=";
+    // 只回本站代理地址：源侧 headers（可能含源自己的 Authorization/Cookie）与上游直链
+    // 都不该出现在 API 响应里，代理需要的信息已经编码进 url 的 r/ua 参数。
     return {
       type,
       url: proxyBase + encoded +
         (referer ? "&r=" + encodeURIComponent(referer) : "") +
         (userAgent ? "&ua=" + encodeURIComponent(userAgent) : ""),
-      sourceUrl: url,
-      headers,
     };
   }
 

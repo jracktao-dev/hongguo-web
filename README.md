@@ -98,7 +98,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.8","active":"hongguo","sources":7,"accounts":true}
+{"service":"hongguo-web","ok":true,"version":"0.14.9","active":"hongguo","sources":7,"accounts":true}
 ```
 
 启动后还可以跑仓库自带的冒烟脚本：
@@ -164,7 +164,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.8。
+想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.9。
 
 ### 镜像与标签
 
@@ -190,7 +190,7 @@ docker run -d --name hongguo-web \
 | 放大并发播放 | environment.MAX_STREAMS: "12" |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: "1"（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: "Asia/Shanghai" |
-| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.8 |
+| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.9 |
 
 ### 基础
 
@@ -424,7 +424,7 @@ var spider = {
 | GET | /api/play?source=&flag=&id= | 取播放地址（{ type, url }；内置红果带 quality） |
 | GET | /api/play/fallback?source=&id=&index= | 播放失败时的替代源，最多 3 个候选 |
 | GET | /api/media?u=&r=&at= | 媒体透传（支持 Range，r 为 Referer） |
-| GET | /api/hls?u=&r=&at= | HLS 清单重写（分片走 /api/media） |
+| GET | /api/hls?u=&r=&at= | HLS 清单重写（分片走 /api/media；重写出的子清单/分片地址自动带上同一 at，浏览器无需另加请求头） |
 | GET/HEAD | /api/stream/:epId?q=&at=&vvc= | 内置红果分集流（服务端解密 + Range）；q 支持 auto / 1080p / 720p / 540p / 480p / 360p / compat |
 | GET | /api/tc/:epId/:q/index.m3u8 | 内置红果 VVC 档的服务端 HLS 转码清单 |
 | GET | /api/tc/:epId/:q/:file | 转码清单里的 init.mp4 / seg_NNNNN.m4s（支持 Range） |
@@ -496,6 +496,7 @@ hongguo-web/
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 :edge；正式版本打 v* 标签并同时推 :版本号 与 :latest。
 
+- **v0.14.9**：全项目审计修复：设 TOKEN 时 JS 源 HLS 子清单/分片请求 401、`HEAD /api/media` 上游连接悬挂、`/api/play` 响应泄漏源侧 headers 与上游直链、写接口非对象 body 报 500、追更失败无退避与集数抖动误报、JS 源 URL 垫片不保真、历史封面不走代理、历史弹窗文案、Service Worker 缓存 `/health`、`engines` 版本与重复 CSS。
 - **v0.14.8**：PWA 版本探测：窗口回到前台或重新获得焦点时比对 `/health` 与服务端版本，发现新版本自动整页刷新，常驻 PWA 不再停留在旧界面。
 - **v0.14.7**：手机播放器工具条重排：4 列网格换行，取消横向滚动，关闭/下一集始终可见；≤420px 小字号，≤340px 三列且关闭独占一行；手机端清晰度按钮去掉括号说明。
 - **v0.14.6**：倍速按钮改为首尾循环，2× 后可回到 0.5× 并继续到 1×；未知倍速归一到 1×。
@@ -514,7 +515,7 @@ docker run --rm -v "$PWD":/w -w /w node:22-trixie-slim sh -c \
   "corepack enable && pnpm --prefix server install --prod --frozen-lockfile && node server/selftest.mjs"
 ```
 
-本机有 Node 22.5+ 时也可以：
+本机有 Node 22.13+ 时也可以（node:sqlite 在 22.5–22.12 仍需 --experimental-sqlite）：
 
 ```bash
 pnpm --prefix server install --prod --frozen-lockfile
