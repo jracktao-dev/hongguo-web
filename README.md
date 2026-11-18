@@ -98,7 +98,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.7","active":"hongguo","sources":7,"accounts":true}
+{"service":"hongguo-web","ok":true,"version":"0.14.8","active":"hongguo","sources":7,"accounts":true}
 ```
 
 启动后还可以跑仓库自带的冒烟脚本：
@@ -164,7 +164,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.7。
+想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.8。
 
 ### 镜像与标签
 
@@ -190,7 +190,7 @@ docker run -d --name hongguo-web \
 | 放大并发播放 | environment.MAX_STREAMS: "12" |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: "1"（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: "Asia/Shanghai" |
-| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.7 |
+| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.8 |
 
 ### 基础
 
@@ -496,6 +496,7 @@ hongguo-web/
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 :edge；正式版本打 v* 标签并同时推 :版本号 与 :latest。
 
+- **v0.14.8**：PWA 版本探测：窗口回到前台或重新获得焦点时比对 `/health` 与服务端版本，发现新版本自动整页刷新，常驻 PWA 不再停留在旧界面。
 - **v0.14.7**：手机播放器工具条重排：4 列网格换行，取消横向滚动，关闭/下一集始终可见；≤420px 小字号，≤340px 三列且关闭独占一行；手机端清晰度按钮去掉括号说明。
 - **v0.14.6**：倍速按钮改为首尾循环，2× 后可回到 0.5× 并继续到 1×；未知倍速归一到 1×。
 - **v0.14.5**：手机端顶栏收进「菜单」抽屉，顶栏高度 166→138px；抽屉内分组直出、42px 大按钮，≤370px 两列。

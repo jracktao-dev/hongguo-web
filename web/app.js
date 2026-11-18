@@ -24,7 +24,9 @@
     // P1(#2)：列表会话内的「上一页 id 签名」，用于识别源忽略 page 参数、反复返回同一批
     lastPageSig: '', searching: false,
     // P2(#5)：最近一次失败的列表动作，网络恢复（online）时自动重试一次
-    failedAction: null
+    failedAction: null,
+    // PWA 版本探测：首次 /health 拿到的服务端版本，用于回到前台时比对
+    serverVersion: ''
   };
 
   // P3(#8)：列表请求序号。切源/切分类/搜索/推荐/猜你喜欢共用同一套 token：
@@ -227,12 +229,40 @@
   }
   function deleteJson(path) { return request(path, null, { method: 'DELETE' }); }
 
-  // 顶部版本标识：从 /health 读取服务端实际版本，避免前端硬编码与镜像版本脱节
+  // 顶部版本标识：从 /health 读取服务端实际版本，避免前端硬编码与镜像版本脱节。
+  // 同时记住首次拿到的版本：PWA 窗口常驻时 app.js 不会自动更新，回到前台再比对，
+  // 版本变了就整页刷新，避免一直停在旧界面。
+  function applyVersion(v) {
+    if (!v) return;
+    v = String(v);
+    if (!state.serverVersion) state.serverVersion = v;
+    var el = $('appVersion'); if (el) el.textContent = 'v' + v;
+  }
   function loadVersion() {
-    fetch('/health', { headers: { Accept: 'application/json' } })
+    fetch('/health', { cache: 'no-store', headers: { Accept: 'application/json' } })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.version) $('appVersion').textContent = 'v' + j.version; })
+      .then(function (j) { if (j && j.version) applyVersion(j.version); })
       .catch(function () {});
+  }
+  var versionCheckAt = 0;
+  var versionChecking = false;
+  function checkVersionAndReload() {
+    if (document.visibilityState === 'hidden' || versionChecking) return;
+    var now = Date.now();
+    if (now - versionCheckAt < 3000) return;
+    versionCheckAt = now;
+    versionChecking = true;
+    fetch('/health', { cache: 'no-store', headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.version) return;
+        var v = String(j.version);
+        if (!state.serverVersion) { state.serverVersion = v; applyVersion(v); return; }
+        if (state.serverVersion !== v) { location.reload(); return; }
+        applyVersion(v);
+      })
+      .catch(function () {})
+      .then(function () { versionChecking = false; }, function () { versionChecking = false; });
   }
 
   function cur() { return state.source || ''; }
@@ -3206,6 +3236,12 @@
     });
     window.addEventListener('focus', checkSwUpdate);
   }
+  // 版本探测：PWA 常驻窗口回到前台时，已加载的 app.js 不会自己更新；
+  // 对比 /health，服务端版本变了就整页刷新。与 serviceWorker 是否可用无关。
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') checkVersionAndReload();
+  });
+  window.addEventListener('focus', checkVersionAndReload);
   loadSources().then(function () {
     var sp = new URLSearchParams(location.search);
     if (!bootFromQuery()) loadHome();
