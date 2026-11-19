@@ -11,9 +11,11 @@
   <img src="docs/screenshots/home.png" alt="红果短剧网页版首页" width="88%">
 </p>
 
-<p align="center"><b>把红果短剧搬进浏览器。</b>一个 Docker 容器，自带内置源，也兼容糖葫芦（THLRedGuo / CatPaw）格式的 JS 源。</p>
+<p align="center"><b>把红果短剧搬进浏览器。</b>一个 Docker 容器，自带内置红果源，也兼容糖葫芦（THLRedGuo / CatPaw）格式的单文件 JS 源。</p>
 
 > 仅供个人学习与自用。内容版权归各平台所有，请勿用于商业分发。
+
+---
 
 ## 目录
 
@@ -35,25 +37,25 @@
 
 ## 为什么是它
 
-红果的网页端并不好直接看：官方播放接口要签名、视频是 CENC 加密、清晰度还分成 HEVC / VVC / H.264 几套编码。这个项目把这些麻烦都留在服务端：
+红果的网页端并不好直接看：官方播放接口要签名、视频是 CENC 加密、清晰度还分成 HEVC / VVC / H.264 几套编码。这个项目把这些麻烦全都留在服务端：
 
-- **浏览器只和本服务通信**：签名取址、CENC 解密、Range 转发、HLS 重写、VVC 转码都在容器里完成。
-- **一个地址看全部**：首页、分类、搜索、推荐、猜你喜欢、详情、选集、播放、账号、历史、收藏、追更，一套 UI 全包。
-- **不锁死在一个源**：内置红果之外，可以导入任意符合糖葫芦格式的单文件 JS 源，支持多源聚合搜索与播放失败自动换源。
+- **浏览器只和本服务通信**：签名取址、CENC 解密、Range 转发、HLS 重写、VVC 转码都在容器里完成，浏览器拿到的就是普通的 HLS / MP4。
+- **一个地址看全部**：首页、分类、搜索、推荐、猜你喜欢、详情、选集、播放、账号、历史、收藏、追更，一套 UI 全包，桌面和手机同一页面。
+- **不锁死在一个源**：内置红果之外，可以导入任意符合糖葫芦格式的单文件 JS 源；支持多源聚合搜索与播放失败自动换源。
 - **自托管、可加固**：SQLite 存个人数据，命名卷持久化；容器默认非 root、只读根文件系统、丢弃全部 capability。
 
 ## 功能
 
 | 模块 | 能力 |
 | --- | --- |
-| 内置红果源 | 服务端 V5 签名取址（SM3 + x-helios / x-medusa / x-ss-stub）+ CENC 分块解密 + Range 转发；1080P HEVC、720P VVC 服务端转码、360P H.264 兼容档，按浏览器解码能力自动选档；系列剧支持官方季表切换 |
+| 内置红果源 | 服务端 V5 签名取址（SM3 + x-helios / x-medusa / x-ss-stub）+ CENC 分块解密 + Range 转发；360P H.264、720P VVC 服务端转码、1080P HEVC，按浏览器解码能力自动选档；系列剧支持官方季表切换 |
 | JS 源 | 单文件 spider，独立 worker 线程沙箱；网页内导入 / 自检 / 删除 / 自动更新；多源聚合搜索与播放失败换源 |
 | 检索与发现 | 首页分类、分类分页、搜索、推荐页（四榜单真实评分合并）、猜你喜欢（协同过滤 + 相似题材 + 热门兜底）、无限滚动 |
-| 播放 | HLS 多码率切档、当前分辨率徽标、倍速循环、全屏、下一集预取、跨集自动连播、播放失败诊断、替代源 |
+| 播放 | HLS 多码率切档、当前分辨率徽标、倍速首尾循环、全屏、下一集预取、跨集自动连播、播放失败诊断、替代源 |
 | 个人数据 | 账号登录、观看历史 / 续播、收藏、追剧提醒、倍速偏好，跨设备同步（SQLite） |
-| 界面 | 深色 / 浅色 / 跟随设备三档主题、响应式、移动端菜单抽屉、PWA |
-| 运维 | /health、/api/metrics、/api/alerts、缓存清理、访问日志、Webhook 告警、离线自测 |
-| 质量 | server/selftest.mjs 离线自测（182 断言），CI 构建镜像前先跑 |
+| 界面 | 深色 / 浅色 / 跟随设备三档主题、响应式、手机端菜单抽屉、PWA |
+| 运维 | /health、/api/metrics、/api/alerts、缓存清理、访问日志、Webhook 告警、播放通道探针 |
+| 质量 | server/selftest.mjs 离线自测（182 断言），CI 构建镜像前先跑；发布冒烟脚本 |
 
 ## 截图
 
@@ -69,8 +71,8 @@
 
 ### 前置条件
 
-- Docker Engine 20.10+ 或 Docker Desktop（需要 docker compose v2）
-- 能访问 ghcr.io。镜像已设为 Public，直接拉取无需登录；拉取慢时可先 docker login ghcr.io
+- Docker Engine 20.10+ 或 Docker Desktop（需要 `docker compose` v2）
+- 能访问 ghcr.io。镜像已设为 Public，直接拉取无需登录；拉取慢时可先 `docker login ghcr.io`
 
 ### 三步启动
 
@@ -82,16 +84,16 @@ docker compose up -d
 
 首次启动会拉取镜像并创建：
 
-- 容器：hongguo-web
-- 命名卷：hongguo-data（账号、历史、收藏、导入的源都在这里）
+- 容器：`hongguo-web`
+- 命名卷：`hongguo-data`（账号、历史、收藏、导入的源都在这里）
 
-浏览器打开 <http://localhost:8787>。
+浏览器打开 <http://localhost:8787> 即可。
 
 ### 确认部署成功
 
 ```bash
-docker compose ps                       # STATUS 列应显示 healthy
-docker compose logs -f                  # 实时日志，Ctrl+C 退出
+docker compose ps                 # STATUS 列应显示 healthy
+docker compose logs -f            # 实时日志，Ctrl+C 退出
 curl -s http://localhost:8787/health
 ```
 
@@ -101,7 +103,7 @@ curl -s http://localhost:8787/health
 {"service":"hongguo-web","ok":true,"version":"0.14.12","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
 ```
 
-启动后还可以跑仓库自带的冒烟脚本：
+也可以跑仓库自带的冒烟脚本（会检查健康、源列表、首页、猜你喜欢、通道探针等）：
 
 ```bash
 BASE=http://127.0.0.1:8787 node server/scripts/smoke.mjs
@@ -119,7 +121,7 @@ docker compose down -v                        # 连数据卷一起删（账号/�
 
 ### 用现成镜像（推荐）
 
-仓库根目录的 [compose.yaml](compose.yaml) 默认使用 ghcr.io/kid941005/hongguo-web:latest。改端口、加口令、调并发都在这个文件里，改完 docker compose up -d 生效。
+仓库根目录的 [compose.yaml](compose.yaml) 默认使用 `ghcr.io/kid941005/hongguo-web:latest`，并已带上完整的加固选项（read_only、tmpfs /tmp、cap_drop ALL、no-new-privileges、非 root）与常用环境变量注释。改端口、加口令、调并发都在这个文件里，改完 `docker compose up -d` 生效。
 
 ### 不克隆代码
 
@@ -129,6 +131,7 @@ docker compose down -v                        # 连数据卷一起删（账号/�
 services:
   hongguo-web:
     image: ghcr.io/kid941005/hongguo-web:latest
+    container_name: hongguo-web
     ports: ["8787:8787"]
     environment:
       TOKEN: ""                      # 需要访问口令就填
@@ -138,11 +141,11 @@ volumes:
   hongguo-data:
 ```
 
-然后 docker compose up -d。
+然后 `docker compose up -d`。
 
 ### 从源码构建
 
-把 compose.yaml 里的 image: 注释掉、取消 build: . 的注释，然后：
+把 compose.yaml 里的 `image:` 注释掉、取消 `build: .` 的注释，然后：
 
 ```bash
 docker compose up -d --build
@@ -164,33 +167,33 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 ghcr.io/kid941005/hongguo-web:0.14.11。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.12`。
 
 ### 镜像与标签
 
-| 触发 | 标签 |
+| 触发 | 产出标签 |
 | --- | --- |
-| push main | :edge |
-| 打 v* 标签 | :版本号 与 :latest |
-| 手动 workflow_dispatch | :edge |
+| push main | `:edge` |
+| 打 v* 标签 | `:版本号` 与 `:latest`（`:latest` 随最新正式版前移） |
+| 手动 workflow_dispatch | `:edge` |
 
 镜像为 linux/amd64 + linux/arm64 多架构；构建前会先跑离线自测。构建记录见 Actions，镜像在 GitHub Packages。
 
 ## 配置
 
-所有变量都可以写在 [compose.yaml](compose.yaml) 的 environment 里，也可以用同名环境变量覆盖。改完 docker compose up -d。
+所有变量都可以写在 [compose.yaml](compose.yaml) 的 environment 里，也可以用同名环境变量覆盖。改完 `docker compose up -d`。
 
-### 常用配置
+### 常见定制
 
 | 需求 | 做法 |
 | --- | --- |
-| 换宿主机端口 | ports 改成 "9000:8787"（左=宿主机，右=容器） |
+| 换宿主机端口 | ports 改成 `"9000:8787"`（左=宿主机，右=容器） |
 | 连容器端口一起换 | environment.PORT 与 ports 右边改成同一个值 |
-| 加访问口令 | environment.TOKEN 填口令。浏览器里会直接弹出「需要访问口令」输入框（也可以 `http://<host>:8787/?at=<口令>` 打开），填一次记住，之后自动给接口和媒体地址带上 at= |
-| 放大并发播放 | environment.MAX_STREAMS: "12" |
-| 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: "1"（默认拒绝，防 SSRF） |
-| 改时区 | environment.TZ: "Asia/Shanghai" |
-| 固定版本 | image 改成 ghcr.io/kid941005/hongguo-web:0.14.11 |
+| 加访问口令 | environment.TOKEN 填口令。浏览器会直接弹出「需要访问口令」输入框（也可 `http://<host>:8787/?at=<口令>` 打开），填一次记住，之后自动给接口和媒体地址带上 `at=` |
+| 放大并发播放 | environment.MAX_STREAMS: `"12"` |
+| 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
+| 改时区 | environment.TZ: `"Asia/Shanghai"` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.12` |
 
 ### 基础
 
@@ -245,7 +248,7 @@ docker run -d --name hongguo-web \
 
 ### 浏览、搜索与发现
 
-- **顶栏**：桌面端为「外观 / 账号 / 历史 / 源」四组下拉；手机端收进右上角「☰ 菜单」抽屉，点一下展开全部分组。
+- **顶栏**：桌面端为「外观 / 账号 / 历史 / 源」四组下拉；手机端收进右上角「☰ 菜单」抽屉，点一下展开全部分组，一格一点即达。
 - **首页 / 分类**：首页给分类与推荐，分类页分页浏览；首页、分类、搜索、推荐页都支持无限滚动，底部保留「加载更多」兜底。
 - **推荐页**：把内置红果四个榜单（热播 / 真人 / 漫剧 / AI）按真实评分合并排序，卡片显示评分。
 - **猜你喜欢**：基于观看历史的三路信号合并排序——协同过滤、相似题材、热门兜底；登录后跨设备一致，未登录只用本机历史做种子。
@@ -261,7 +264,7 @@ docker run -d --name hongguo-web \
 - **全屏**：按钮 / 双击画面 / F。
 - **下一集预取**：接近结尾时后台预取下一集首段，点「下一集」更快。
 - **跨集自动连播**：默认开启，可点「连播 开 / 连播 关」关闭；关闭后播完停在当前集并落盘进度。播放器会区分「假结束」与真片尾，假结束自动恢复当前集且每集只恢复一次。
-- **播放失败排查**：浮层会区分「内容源暂时不可用 / 设备不支持 VVC / 解不了这一档画面 / 地址可用但播放异常」，并给出重试、切 360P 兼容或换源的对应操作。
+- **播放失败排查**：浮层会区分「内容源暂时不可用 / 设备不支持 VVC / 解不了这一档画面 / 地址可用但播放异常」，并给出重试、切 360P 兼容或换源的对应操作。加载慢先提示「网络较慢，正在加载，请稍候…」，真正超时才报错，不会把「慢」误判成「坏」。
 
 ### 账号与多设备同步
 
@@ -279,7 +282,7 @@ docker run -d --name hongguo-web \
 
 ### PWA 与快捷键
 
-Chrome / Edge 地址栏会出现「安装」；手机浏览器「添加到主屏幕」后以独立窗口运行。Service Worker 需要安全上下文（https:// 或 http://localhost），局域网纯 HTTP 可用但没有离线缓存。
+Chrome / Edge 地址栏会出现「安装」；手机浏览器「添加到主屏幕」后以独立窗口运行。Service Worker 需要安全上下文（https:// 或 http://localhost），局域网纯 HTTP 可用但没有离线缓存。常驻窗口回到前台时会比对服务端版本，发现新版本自动整页刷新。
 
 | 按键 | 作用 |
 | --- | --- |
@@ -359,22 +362,22 @@ var spider = {
 
 要点：
 
-- 有网可用 await fetch(url, { headers, timeoutMs })；html.parse(...) 可用（支持 tag、.class、#id、tag.class、空格后代选择器）。
+- 有网可用 `await fetch(url, { headers, timeoutMs })`；`html.parse(...)` 可用（支持 tag、.class、#id、tag.class、空格后代选择器）。
 - updateUrl 必须是 HTTPS 且返回同一个 id 的源；更新前会跑一次 home + 首条详情自检，失败保留旧版本。按 URL 导入时即使 meta 没写 updateUrl，也会用导入地址作为上游。
-- play 必须返回可直连的 m3u8 / mp4；flv 能识别但没有播放器。返回 parse: 1（需要 webview 嗅探）本服务不支持，会报「需要 webview 嗅探解析」。
-- 分页建议返回 pagecount: hasMore ? page + 1 : page，并明确 hasMore；写死 page + 1 会让前端无限翻页。
+- play 必须返回可直连的 m3u8 / mp4；flv 能识别但没有播放器。返回 `parse: 1`（需要 webview 嗅探）本服务不支持，会报「需要 webview 嗅探解析」。
+- 分页建议返回 `pagecount: hasMore ? page + 1 : page`，并明确 hasMore；写死 page + 1 会让前端无限翻页。
 - 除核心方法外还可选实现 feed / rankings / recommendations / rankingBoards / seriesSeasons / danmaku 等；目前对 JS 源只调用核心方法，内置红果的季表由服务端自行实现。
 - 不得 import / require，不得访问 Node 内置模块或文件系统。
 
 ## HTTP API
 
-所有错误统一返回 { error, code }。个人数据接口需登录并带 X-Auth-Token；应用级 TOKEN 支持 Authorization: Bearer 或 ?at=。
+所有错误统一返回 `{ error, code }`。个人数据接口需登录并带 `X-Auth-Token`；应用级 TOKEN 支持 `Authorization: Bearer` 或 `?at=`。
 
 ### 基础与运维
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | /health | 健康检查（含 accounts 是否启用账号系统） |
+| GET | /health | 健康检查（含 accounts 是否启用账号系统、tokenRequired 是否需要口令） |
 | GET | /api/metrics | 运行指标：uptime、RSS、取流尝试/失败/空响应、熔断、去重、通道计数、转码任务、官方设备状态 |
 | GET | /api/alerts | 通道监控快照：status（ok / degraded / down / unknown）、失败次数、最近告警 |
 | POST | /api/alerts/check | 立即跑一次通道探针 |
@@ -403,7 +406,7 @@ var spider = {
 | --- | --- | --- |
 | GET | /api/sources | 源列表 + 当前启用源 |
 | POST | /api/sources/import | 导入源：{ url } 或 { code } |
-| POST | /api/sources/active | 切换启用源：{ id } |
+| POST | /api/sources/active | 切换启用源：{ id }（普通操作，不按管理写拦截） |
 | GET | /api/sources/:id/log | 源最近运行日志 |
 | GET | /api/sources/:id/health | 源健康检查；?deep=1 时内置红果走 home→detail→stream 真实取流 |
 | DELETE | /api/sources/:id | 删除用户源（内置源不可删） |
@@ -424,16 +427,16 @@ var spider = {
 | GET | /api/play?source=&flag=&id= | 取播放地址（{ type, url }；内置红果带 quality） |
 | GET | /api/play/fallback?source=&id=&index= | 播放失败时的替代源，最多 3 个候选 |
 | GET | /api/media?u=&r=&at= | 媒体透传（支持 Range，r 为 Referer） |
-| GET | /api/hls?u=&r=&at= | HLS 清单重写（分片走 /api/media；重写出的子清单/分片地址自动带上同一 at，浏览器无需另加请求头） |
+| GET | /api/hls?u=&r=&at= | HLS 清单重写（分片走 /api/media；重写出的子清单/分片地址自动带上同一 at） |
 | GET/HEAD | /api/stream/:epId?q=&at=&vvc= | 内置红果分集流（服务端解密 + Range）；q 支持 auto / 1080p / 720p / 540p / 480p / 360p / compat |
 | GET | /api/tc/:epId/:q/index.m3u8 | 内置红果 VVC 档的服务端 HLS 转码清单 |
 | GET | /api/tc/:epId/:q/:file | 转码清单里的 init.mp4 / seg_NNNNN.m4s（支持 Range） |
 
-### 错误码
+### 错误码与日志
 
 常见 code：BAD_INPUT / BAD_JSON / BAD_URL（400）、UNAUTHORIZED / TOKEN_REQUIRED（401，后者=站点访问口令未填或不对）、PROTECTED（403）、NOT_FOUND（404）、USER_EXISTS（409）、CODEC_UNSUPPORTED（415）、RATE_LIMITED（429）、BUSY / UPSTREAM_COOLDOWN / UPSTREAM_EMPTY（503）、TIMEOUT（504），其余上游问题 502。凡「过一会儿再来」的码都带 Retry-After。
 
-访问日志：每个 /api/* 请求与失败的静态请求写一条 {"event":"access",method,path,status,ms}；静态资源 200 不记，避免刷屏。
+访问日志：每个 /api/* 请求与失败的静态请求写一条 `{"event":"access",method,path,status,ms}`；静态资源 200 不记，避免刷屏。
 
 ## 架构与目录
 
@@ -460,16 +463,18 @@ hongguo-web/
 │  ├─ db.mjs / users.mjs            # SQLite 与用户数据
 │  ├─ http.mjs                      # 路由、鉴权、访问日志
 │  ├─ selftest.mjs                  # 离线自测（182 断言）
+│  ├─ scripts/smoke.mjs             # 发布冒烟
 │  └─ sources/                      # JS 源运行时、沙箱、管理
-├─ sources/builtin/                 # qimao / xifan / xingya / niuniu / template / maccms
+├─ sources/builtin/                 # hongguo（内置）/ qimao / xifan / xingya / niuniu / template / maccms
 └─ web/                             # 前端静态页 + hls.js + PWA
 ```
 
-技术栈：前端原生 JS + hls.js；后端 Node.js ESM；数据 SQLite（node:sqlite）；容器 node:22-trixie-slim + ffmpeg 7.1。
+技术栈：前端原生 JS + hls.js；后端 Node.js ESM（Node ≥ 22.13，用到 node:sqlite）；数据 SQLite；容器 node:22-trixie-slim + ffmpeg 7.1。
 
 ## 安全说明
 
-- **访问口令**：公网部署务必设置 TOKEN。设了之后页面会弹「需要访问口令」输入框（PWA 从桌面图标打开也能填），也可用 `?at=<TOKEN>` 打开；填一次记住，之后接口与媒体地址自动带参。入口在「账号 → 🔑 口令」，可改可清。未设置 TOKEN 时，源导入/删除/更新/自检/日志、清缓存、告警检查等管理写接口只接受内网来源；「切换当前源」是普通操作，不受此限制（顶栏下拉框人人可点）。
+- **访问口令**：公网部署务必设置 TOKEN。设了之后页面会弹「需要访问口令」输入框（PWA 从桌面图标打开也能填），也可用 `?at=<TOKEN>` 打开；填一次记住，之后接口与媒体地址自动带参。入口在「账号 → 🔑 口令」，可改可清。
+- **未设 TOKEN 时的管理接口**：源导入/删除/更新/自检/日志、清缓存、告警检查、`/api/metrics` 只接受内网来源；「切换当前源」是普通操作，不受此限制（顶栏下拉框人人可点）。
 - **反向代理**：只有确认前面是可信代理时才设 TRUST_PROXY=1，否则 X-Forwarded-For 可被伪造。
 - **SSRF**：默认禁止代理内网媒体、禁止 JS 源访问内网；确有需要再分别打开 ALLOW_PRIVATE_MEDIA / ALLOW_PRIVATE_FETCH。
 - **JS 源沙箱**：每源独立 worker_threads，有内存与超时限制，拿不到 Node API；但源代码仍由你导入，请只安装可信来源。
@@ -494,10 +499,10 @@ hongguo-web/
 
 ## 版本说明
 
-最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 :edge；正式版本打 v* 标签并同时推 :版本号 与 :latest。
+最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
 
-- **v0.14.12**：修复播放加载提示误报。原来起播 8 秒没出画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS/服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集/切清晰度/深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。本机 8787 容器已升级到该版本（`/health` 报 `0.14.12`，桌面/移动端播放回归 26/26 通过）。
-- **v0.14.11**：新增「访问口令门」：设了 TOKEN 的实例打开页面先弹口令输入框（首页不再刷成一屏 401），口令填对即记住并自动重载；登录/注册被口令拦住时提示「本站需要访问口令」并引导填写；菜单「账号 → 🔑 口令」可随时重填或清除。服务端 `/health` 增 `tokenRequired` 字段，口令失败改用独立业务码 `TOKEN_REQUIRED`（仍是 401），前端据此区分「站点要口令」与「账号登录态失效」。本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.11`，冒烟 7/7 通过）。
+- **v0.14.12**：修复「播放加载超时」误报。原来起播 8 秒没画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS / 服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集 / 切清晰度 / 深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。本机 8787 容器已升级到该版本（`/health` 报 `0.14.12`，桌面/移动端播放回归 26/26 通过）。
+- **v0.14.11**：新增「访问口令门」：设了 TOKEN 的实例打开页面先弹口令输入框（首页不再刷成一屏 401），口令填对即记住并自动重载；登录/注册被口令拦住时提示「本站需要访问口令」并引导填写；菜单「账号 → 🔑 口令」可随时重填或清除。服务端 `/health` 增 `tokenRequired` 字段，口令失败改用独立业务码 `TOKEN_REQUIRED`（仍是 401），前端据此区分「站点要口令」与「账号登录态失效」。
 - **v0.14.10**：`/api/sources/active` 不再按管理写拦截：切换当前源属于普通操作（不执行脚本），未设 TOKEN 的公网反代部署下前端切源不再 403；源导入/删除/更新/自检/日志仍只对内网开放。
 - **v0.14.9**：全项目审计修复：设 TOKEN 时 JS 源 HLS 子清单/分片请求 401、`HEAD /api/media` 上游连接悬挂、`/api/play` 响应泄漏源侧 headers 与上游直链、写接口非对象 body 报 500、追更失败无退避与集数抖动误报、JS 源 URL 垫片不保真、历史封面不走代理、历史弹窗文案、Service Worker 缓存 `/health`、`engines` 版本与重复 CSS。
 - **v0.14.8**：PWA 版本探测：窗口回到前台或重新获得焦点时比对 `/health` 与服务端版本，发现新版本自动整页刷新，常驻 PWA 不再停留在旧界面。
