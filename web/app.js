@@ -2016,8 +2016,12 @@
   }
 
   // ---- 播放错误提示、加载超时与一键切源 ----
-  var playWatchdog = null;
-  function clearPlayWatchdog() { if (playWatchdog) { clearTimeout(playWatchdog); playWatchdog = null; } }
+  var playWatchdog = null;   // 硬超时：明显「一点数据都没来」才报错
+  var playSlowHint = null;   // 软提示：慢网络先提醒一句「正在加载」，不打断播放
+  function clearPlayWatchdog() {
+    if (playWatchdog) { clearTimeout(playWatchdog); playWatchdog = null; }
+    if (playSlowHint) { clearTimeout(playSlowHint); playSlowHint = null; }
+  }
   function hidePlayerError() {
     clearPlayWatchdog();
     var box = $('playerError'); if (box) box.classList.add('hidden');
@@ -2070,16 +2074,27 @@
     toast('正在换到 ' + fb.name + ' 第 ' + (fb.targetIndex + 1) + ' 集…');
     openDetail(fb.id, fb.source);
   }
+  // 加载监测分两级，避免把「网络慢」误判成「源坏了」：
+  //   8 秒还没数据 → 只弹一句非阻断的「网络较慢，正在加载」，用户继续等，不吓人；
+  //   HLS/服务端转码 25 秒、直连 15 秒仍一点数据都没有 → 才弹错误横幅并给重试/换源。
+  // 期间只要拿到元数据/缓冲/首帧（见 bindPlayerEvents 的 loadedmetadata/progress），就立刻清掉这两级。
   function armPlayWatchdog() {
     clearPlayWatchdog();
-    playWatchdog = setTimeout(function () {
+    var hardMs = state.hlsMode ? 25000 : 15000;
+    playSlowHint = setTimeout(function () {
+      playSlowHint = null;
       var v = $('video');
-      if (v && v.readyState < 1) {
+      if (v && v.readyState < 1 && !v.error) toast('网络较慢，正在加载，请稍候…');
+    }, 8000);
+    playWatchdog = setTimeout(function () {
+      playWatchdog = null;
+      var v = $('video');
+      if (v && v.readyState < 1 && !v.error) {
         // 超时可能连 error 事件都不来，这里兜底把「切换中…」清掉，别让按钮永远卡住。
         if (state.switching) { state.switching = false; updateQualityBtn(); }
-        showPlayerError('播放加载超时（8 秒未响应），可能是当前数据源受限，请换源或重试。');
+        showPlayerError('播放加载超时（' + Math.round(hardMs / 1000) + ' 秒未收到数据），可能是当前数据源或网络较慢，请换源或重试。');
       }
-    }, 8000);
+    }, hardMs);
   }
   function onVideoError() {
     var v = $('video'); if (!v || !state.detail) return;
@@ -2293,6 +2308,8 @@
         toast(auto ? '已静音自动续播，按 M 键可恢复声音' : '浏览器拦截了有声播放，已静音开始播放，按 M 键可恢复声音');
         return;
       }
+      // 换集/切档/深链自动起播被新的 load 取代时，play() 会以 AbortError 拒绝，这不是播放失败，静默忽略。
+      if (err.name === 'AbortError') return;
       // 已经有 MediaError、或错误本身就是「没有可播放的源」（NotSupportedError），都交给 error 事件的
       // 三级阶梯处理：play() 的 reject 常常比 error 事件早一步到达，这里再弹一次会把它的话术盖掉。
       if (v.error || err.name === 'NotSupportedError') return;
@@ -2501,6 +2518,8 @@
   function bindPlayerEvents() {
     var v = $('video');
     v.addEventListener('loadedmetadata', function () {
+      // 元数据已到 = 流是活的，慢提示/超时监测到此为止（真实故障由 error / hls ERROR 负责）。
+      clearPlayWatchdog();
       // 有些浏览器在换源/换集后会把 playbackRate 复位，元数据就绪时按记住的倍速再设一次。
       try { v.playbackRate = state.rate; } catch (e) {}
       $('btnRate').textContent = rateLabel(state.rate);
@@ -2522,6 +2541,11 @@
     v.addEventListener('loadeddata', function () {
       clearDiag();
       armStallCheck(v, 400);
+    });
+    v.addEventListener('progress', function () {
+      // 只要已经缓冲到数据，就说明是「慢」而不是「坏」，撤掉慢提示与超时监测。
+      if (!v.buffered || !v.buffered.length) return;
+      if (v.buffered.end(v.buffered.length - 1) > 0) clearPlayWatchdog();
     });
     v.addEventListener('timeupdate', function () {
       // 记录最后稳定位置：假结束时用它续播，避免从头再来
