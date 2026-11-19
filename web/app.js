@@ -26,7 +26,9 @@
     // P2(#5)：最近一次失败的列表动作，网络恢复（online）时自动重试一次
     failedAction: null,
     // PWA 版本探测：首次 /health 拿到的服务端版本，用于回到前台时比对
-    serverVersion: ''
+    serverVersion: '',
+    // /health 报告的「本站是否需要访问口令」，决定启动时是否先弹口令框
+    tokenRequired: false
   };
 
   // P3(#8)：列表请求序号。切源/切分类/搜索/推荐/猜你喜欢共用同一套 token：
@@ -138,6 +140,15 @@
     if (!token || u.indexOf('at=') !== -1) return u;
     return u + (u.indexOf('?') === -1 ? '?' : '&') + 'at=' + encodeURIComponent(token);
   }
+  // 口令落盘/清除：PWA 从图标打开没有地址栏可加 ?at=，只能靠界面填一次记住。
+  function setAccessToken(v) {
+    tokenCache = String(v || '').trim();
+    try {
+      if (tokenCache) localStorage.setItem(TOKEN_KEY, tokenCache);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (e) {}
+  }
+  function clearAccessToken() { setAccessToken(''); }
   function headers(extra) {
     var out = { 'Accept': 'application/json' };
     var token = readToken();
@@ -191,6 +202,8 @@
           }
           if (!r.ok) {
             if (left > 0 && canRetry && (r.status === 502 || r.status === 504)) return attempt(left - 1);
+            // 站点要口令而本机没有/带错：直接弹口令框，不要只留一句「口令不正确」的死胡同。
+            if (r.status === 401 && body && body.code === 'TOKEN_REQUIRED') showGate('访问口令不正确，请重新填写');
             var err = new Error(body && body.error || ('HTTP ' + r.status));
             err.code = body && body.code; err.status = r.status; throw err;
           }
@@ -243,6 +256,24 @@
       .then(function (r) { return r.json(); })
       .then(function (j) { if (j && j.version) applyVersion(j.version); })
       .catch(function () {});
+  }
+  // /health 的 tokenRequired 告诉前端「这个实例要不要访问口令」。老版本服务端没这个字段，
+  // 拿到 false，行为与以前一致（只能靠 ?at= 带口令）。
+  function probeTokenRequirement() {
+    return fetch('/health', { cache: 'no-store', headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        state.tokenRequired = !!(j && j.tokenRequired);
+        syncTokenEntry();
+        return state.tokenRequired;
+      })
+      .catch(function () { state.tokenRequired = false; syncTokenEntry(); return false; });
+  }
+  // 菜单里的「口令」入口：只有「服务端要口令」或「本机存过口令」时才出现，
+  // 没设 TOKEN 的常规部署菜单保持干净。
+  function syncTokenEntry() {
+    var btn = $('btnAccessToken'); if (!btn) return;
+    btn.classList.toggle('hidden', !(state.tokenRequired || !!readToken()));
   }
   var versionCheckAt = 0;
   var versionChecking = false;
@@ -394,6 +425,42 @@
     $('tabRegister').classList.toggle('active', mode === 'register');
   }
   function closeAuth() { $('authModal').classList.add('hidden'); }
+  // ---- 访问口令门 ----
+  // 装到桌面的 PWA 从图标打开没有地址栏，localStorage 一旦被清（或换了域名/端口）
+  // 就会满屏 401 且无处输入口令。这里给一个输入框：填对 → 记住 → 重载。
+  function showGate(msg) {
+    var m = $('gateModal'); if (!m) return;
+    m.classList.remove('hidden');
+    var saved = readToken();
+    $('gateMsg').className = 'impmsg' + (msg ? ' err' : '');
+    $('gateMsg').textContent = msg || '';
+    $('btnGateClear').classList.toggle('hidden', !saved);
+    $('gateHint').textContent = saved
+      ? '本机已保存的访问口令可能不正确或已失效，请重新填写。'
+      : '这个站点设置了访问口令（部署时的 TOKEN 环境变量）。填一次就会记住，之后自动带上。';
+    $('gateInput').value = '';
+    try { $('gateInput').focus(); } catch (e) {}
+  }
+  function closeGate() { $('gateModal').classList.add('hidden'); }
+  function submitGate() {
+    var v = $('gateInput').value.trim();
+    if (!v) { $('gateMsg').className = 'impmsg err'; $('gateMsg').textContent = '请填写访问口令'; return; }
+    setAccessToken(v);
+    $('gateMsg').className = 'impmsg'; $('gateMsg').textContent = '正在验证…';
+    // 用 /api/sources 试一次：便宜、不碰上游，口令对就重载，错就留在框里改。
+    fetch('/api/sources', { headers: { Authorization: 'Bearer ' + v, Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 401) { clearAccessToken(); throw new Error('访问口令不正确'); }
+        if (!r.ok) throw new Error('服务返回 HTTP ' + r.status);
+        location.reload();
+      })
+      .catch(function (e) {
+        $('gateMsg').className = 'impmsg err';
+        $('gateMsg').textContent = (e && e.message) || '验证失败，请重试';
+      });
+  }
+  function clearGateToken() { clearAccessToken(); location.reload(); }
+
   function doAuth() {
     var username = $('authUser').value.trim(), pw = $('authPass').value;
     if (!username || !pw) { $('authMsg').className = 'impmsg err'; $('authMsg').textContent = '请填写用户名和密码'; return; }
@@ -408,6 +475,13 @@
       loadRate(); applyRate(); // 切换到该账号自己的倍速偏好（本地缓存），随后用服务端校正
       return Promise.all([mergeServerHistory(), loadFavs(), loadFollows(), syncRateFromServer()]).then(function () { checkUpdates(true, true); });
     }).catch(function (e) {
+      if (e && e.code === 'TOKEN_REQUIRED') {
+        // 登录也被访问口令拦住了：引导去填口令，别让人以为是自己账号密码错。
+        $('authMsg').className = 'impmsg err';
+        $('authMsg').textContent = '本站需要访问口令，请先填写口令';
+        showGate('本站需要访问口令，填写后才能登录');
+        return;
+      }
       $('authMsg').className = 'impmsg err'; $('authMsg').textContent = e.message || '操作失败';
     }).then(function () { $('btnAuthOk').disabled = false; });
   }
@@ -3140,6 +3214,11 @@
   $('btnFollowCheck').addEventListener('click', function () { checkUpdates(true, false).then(renderFollows); });
   $('tabLogin').addEventListener('click', function () { setAuthMode('login'); });
   $('tabRegister').addEventListener('click', function () { setAuthMode('register'); });
+  $('btnAccessToken').addEventListener('click', function () { closeMenus(); closeMobileMenu(); showGate(); });
+  $('btnGateCancel').addEventListener('click', closeGate);
+  $('btnGateOk').addEventListener('click', submitGate);
+  $('btnGateClear').addEventListener('click', clearGateToken);
+  $('gateInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitGate(); });
   $('btnAuthCancel').addEventListener('click', closeAuth);
   $('btnAuthOk').addEventListener('click', doAuth);
   $('authPass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doAuth(); });
@@ -3247,7 +3326,11 @@
     if (document.visibilityState === 'visible') checkVersionAndReload();
   });
   window.addEventListener('focus', checkVersionAndReload);
-  loadSources().then(function () {
+  // 启动先问 /health：服务端设了 TOKEN 而本地没有口令时，先把口令框弹出来，
+  // 否则首页会刷成一屏「服务访问口令不正确」，用户既不知道要填什么、也无处可填。
+  probeTokenRequirement().then(function (required) {
+    if (required && !readToken()) { showGate(); return null; }
+    return loadSources().then(function () {
     var sp = new URLSearchParams(location.search);
     if (!bootFromQuery()) loadHome();
     if (sp.get('manage') === '1') openManage();
@@ -3257,5 +3340,6 @@
       loadRate(); applyRate(); // 已登录：先套用该账号本地缓存的倍速
       return Promise.all([loadFavs(), loadFollows(), mergeServerHistory(), syncRateFromServer()]).then(function () { return checkUpdates(false, true); });
     });
-  }).catch(function (e) { showError(e); });
+    }).catch(function (e) { showError(e); });
+  });
 })();

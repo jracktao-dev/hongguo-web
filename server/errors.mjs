@@ -13,6 +13,9 @@ const STATUS = {
   // 权限
   PROTECTED: 403,
   UNAUTHORIZED: 401,
+  // 服务端设了 TOKEN、而请求没带（或带错）访问口令：单独一个业务码，前端才能区分
+  // 「站点要口令」和「账号登录态失效」——两者都是 401，但只有前者该弹口令输入框。
+  TOKEN_REQUIRED: 401,
   USER_EXISTS: 409,
   RATE_LIMITED: 429,
   // 资源

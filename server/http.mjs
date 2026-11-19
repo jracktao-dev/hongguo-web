@@ -83,7 +83,8 @@ function requireToken(req, token, url) {
     const actual = Buffer.from(value);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   });
-  if (!ok) throw fail("UNAUTHORIZED", "服务访问口令不正确");
+  // 用独立业务码：前端据此弹「访问口令」输入框（PWA 无地址栏，只能靠界面填）。
+  if (!ok) throw fail("TOKEN_REQUIRED", "服务访问口令不正确");
 }
 
 // 未设 TOKEN 的部署（本机自用最常见）不能让管理接口裸奔到公网：
@@ -172,6 +173,8 @@ export function createServer({ provider, sources, catalog, users = null, monitor
         active: sources.activeId,
         sources: sources.list().sources.length,
         accounts: Boolean(users),
+        // 只暴露「要不要口令」，不暴露口令本身；前端据此在启动时决定是否弹口令框。
+        tokenRequired: Boolean(token),
       })],
 
     ["GET", /^\/api\/metrics$/, ({ json }) =>

@@ -55,6 +55,7 @@
           <button id="btnAccount" class="menuitem" type="button" title="登录（多设备同步）">👤 登录</button>
           <button id="btnRegister" class="menuitem" type="button" title="注册新账号">注册</button>
           <button id="btnLogout" class="menuitem hidden" type="button" title="退出登录">退出</button>
+          <button id="btnAccessToken" class="menuitem hidden" type="button" title="设置站点访问口令">🔑 口令</button>
         </div>
       </div>
       <div class="tbmenu" id="menuHistory">
@@ -204,6 +205,21 @@
       <button id="btnAuthOk" class="btn">登录</button>
     </div>
     <div id="authMsg" class="impmsg"></div>
+  </div>
+</div>
+
+<div id="gateModal" class="modal hidden">
+  <div class="modal-box narrow">
+    <h3>需要访问口令</h3>
+    <p class="hint" id="gateHint">这个站点设置了访问口令（部署时的 TOKEN 环境变量）。填一次就会记住，之后自动带上。</p>
+    <label class="lbl">访问口令</label>
+    <input id="gateInput" class="input" type="password" maxlength="200" autocomplete="off" placeholder="部署者设置的 TOKEN 值" />
+    <div class="modal-actions">
+      <button id="btnGateClear" class="btn ghost danger hidden" type="button">清除已存口令</button>
+      <button id="btnGateCancel" class="btn ghost" type="button">稍后</button>
+      <button id="btnGateOk" class="btn" type="button">确定</button>
+    </div>
+    <div id="gateMsg" class="impmsg"></div>
   </div>
 </div>
 
