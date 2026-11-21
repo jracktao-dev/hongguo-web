@@ -6,7 +6,7 @@
   var state = {
     sources: [], source: '', classes: [], items: [], page: 1, hasMore: false,
     mode: 'home', tid: '', q: '', detail: null, line: 0, epIdx: 0, viewSource: '',
-    hls: null, hlsMode: false, histKey: null, lastSave: 0, pendingSeek: 0,
+    hls: null, hlsMode: false, hlsLive: false, busyRetries: 0, histKey: null, lastSave: 0, pendingSeek: 0,
     pendingResume: null, pendingPlay: null,
     rate: 1, quality: -1, levels: [], qualityOptions: [], qualityNote: '',
     qualityKey: '', playKind: '', hevcCap: null, hevcFallback: false, silentSeek: false, hevcWarned: false,
@@ -2159,6 +2159,9 @@
   function attachHls(url) {
     var v = $('video');
     state.hlsMode = true;
+    // 服务端转码清单是 EVENT 类型：转码没结束时清单会一直追加分片，video.duration 也随之变长。
+    // 这期间不能用「临近片尾」判断自动连播，否则刚播到当前已产出的末尾就被当成播完而跳集。
+    state.hlsLive = true;
     if (window.Hls && window.Hls.isSupported()) {
       var hls = new window.Hls({ maxBufferLength: 30 });
       state.hls = hls;
@@ -2173,8 +2176,13 @@
             return { label: levelLabel(lv), levelIndex: i };
           }));
         }
+        state.busyRetries = 0;
         updateQualityBtn();
       });
+      // 清单里出现 EXT-X-ENDLIST 后 hls.js 会把 details.live 置 false：那一刻起 duration 才是真实总长。
+      function syncLive(d) { if (d && d.details) state.hlsLive = d.details.live !== false; }
+      hls.on(window.Hls.Events.LEVEL_LOADED, function (_e, data) { syncLive(data); });
+      hls.on(window.Hls.Events.LEVEL_UPDATED, function (_e, data) { syncLive(data); });
       hls.on(window.Hls.Events.LEVEL_SWITCHED, function () {
         if (state.switching) state.switching = false;
         updateResBadge(); updateQualityBtn();
@@ -2185,6 +2193,15 @@
         if (state.playKind === 'native') {
           // 服务端转码档：转码失败/分片取不到时走和直链一样的降档阶梯，而不是干等一个通用报错。
           if (state.switching) { state.switching = false; updateQualityBtn(); }
+          // 503/429 是「转码槽位暂时排满」而不是这一档播不了：先原地等一会儿重试同一档，
+          // 不要降清晰度——否则一次排队就会把整部剧永久压到 540P。
+          var busyCode = data && data.response && data.response.code;
+          if ((busyCode === 503 || busyCode === 429) && (state.busyRetries || 0) < 6) {
+            state.busyRetries = (state.busyRetries || 0) + 1;
+            toast('转码排队中，正在重试…');
+            setTimeout(function () { try { hls.startLoad(); } catch (e) {} }, 2000);
+            return;
+          }
           if (!state.hevcFallback && autoFallbackOnce()) return;
           showPlayerError('HLS 流播放失败：' + (data.details || '流错误'));
           toast('转码线路播放失败：' + (data.details || '流错误'));
@@ -2227,6 +2244,8 @@
     // （playKind 保持 native，转码档用 state.hlsMode 标记为 hls.js 播放）。
     state.playKind = type === 'hls' && !(qualityInfo && qualityInfo.options) ? 'hls' : 'native';
     state.hlsMode = false;
+    state.hlsLive = false;
+    state.busyRetries = 0;
     state.switchAt = Date.now();
     state.switchRetried = false;
     state.switching = false;
@@ -2560,10 +2579,17 @@
     v.addEventListener('timeupdate', function () {
       if (v.paused || v.seeking) return;
       if (!isFinite(v.duration) || v.duration <= 1) return;
+      // 转码 HLS 还在追加分片时 duration 会一路变长，此时「close to duration」不代表播完；
+      // 等清单 ENDLIST（hlsLive=false）后再判断，否则会在第 3–4 秒就把没播完的一集跳过。
+      if (state.hlsMode && state.hlsLive) return;
+      if (v.currentTime < 5) return;   // 极短窗口（清单刚就绪）不参与片尾判定
       if (v.currentTime > 0 && v.duration - v.currentTime <= 0.6) scheduleAutoNext();
     });
     v.addEventListener('pause', function () { saveProgress(v); });
     v.addEventListener('ended', function () {
+      // 转码清单尚未结束（没有 ENDLIST）：浏览器只是播到了「当前已产出」的末尾，
+      // 后面还有分片要追加，继续播即可，绝不能当成片尾去切下一集。
+      if (state.hlsMode && state.hlsLive) { try { v.play(); } catch (e) {} return; }
       // 假结束（时长为 0 或离片尾还差得远）说明是取流/解码中断，重播当前集而不是切下一集
       if (!realEnd(v)) { recoverFromFalseEnd(v); return; }
       var dur = Math.floor(v.duration || 0);

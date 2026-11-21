@@ -229,7 +229,8 @@ docker run -d --name hongguo-web \
 | HONGGUO_MODEL_CACHE_MAX | 512 | 官方播放模型缓存条目上限（最小 16） |
 | FFMPEG_PATH | ffmpeg | 服务端转码用的 ffmpeg；官方镜像已装 7.1+，裸机需自行安装 |
 | TRANSCODE_MAX_INPUT_BYTES | 100663296 | 单集转码输入上限（默认 96 MB） |
-| TRANSCODE_MAX_CONCURRENT | 2 | 同时进行的转码任务上限，超出返回 503 BUSY |
+| TRANSCODE_MAX_CONCURRENT | 2 | 同时进行的转码任务上限；槽位排满时先排队等待（见下一行），等不到才返回 503 BUSY |
+| TRANSCODE_QUEUE_WAIT_MS | 8000 | 转码槽位排满时最长排队等待毫秒数（默认 8 秒）；设为 `0` 立即返回 503。排队能让「前一个转码刚好收尾」的请求直接接上，不必让前端降清晰度 |
 | TRANSCODE_READ_TIMEOUT_MS | 60000 | 单次读取上游的停滞超时（毫秒） |
 | TRANSCODE_JOB_TIMEOUT_MS | 600000 | 单个转码任务硬超时（毫秒，最小 60000） |
 | HLS_TC_TTL_MS | 1800000 | 转码产物保留时长（默认 30 分钟），到期清理 |
@@ -511,6 +512,7 @@ hongguo-web/
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
 
+- **v0.14.15**：修复「一集没播完就自动跳下一集、并且画质被降」。服务端转码出的 HLS 是**边转边追加分片**的 EVENT 清单，`video.duration` 会一路变长；播放器此前用「当前时间接近 duration」判断片尾，于是转码刚产出 3–4 秒时就误判播完，直接切下一集（连播开着时表现为疯狂跳集），切集又会打断刚建立的转码而回落到低档。现在改为：清单里出现 `EXT-X-ENDLIST`（`details.live === false`）之后才允许片尾判定，转码期间 `ended` 事件只续播不切集。另外把「转码槽位排满」从立即 503 改为**先排队最多 8 秒**（`TRANSCODE_QUEUE_WAIT_MS`），并让前端遇到 503/429 时**原档重试**而不是降清晰度，避免一次排队把整部剧永久压到 540P。
 - **v0.14.13**：发布流程变更——同一份镜像在推送 GHCR 的同时同步推送到 Docker Hub（`docker.io/kid941005/hongguo-web`），标签与 GHCR 完全一致；workflow 未配置 Docker Hub secrets 时自动跳过、只推 GHCR。功能与 v0.14.12 完全一致。
 - **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。 本机 8787 容器已升级到该版本（`/health` 报 `0.14.14`，红果官方通道探测恢复 `status: ok / channel: official`）。
 - **v0.14.12**：修复「播放加载超时」误报。原来起播 8 秒没画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS / 服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集 / 切清晰度 / 深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。本机 8787 容器已升级到该版本（`/health` 报 `0.14.12`，桌面/移动端播放回归 26/26 通过）。

@@ -14,6 +14,9 @@ import { transcodeAvailable, stageVvcInput, stageHevcInput, hevcTranscodeEnabled
 
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const MAX_CONCURRENT = Math.max(1, Number(process.env.TRANSCODE_MAX_CONCURRENT || 2) || 2);
+// 槽位满时先排队等一会儿（默认 8s），而不是立刻 503——同一个人连看/多端同看时
+// 1080P 才不会因为「刚好有 2 个转码在跑」被前端降成 540P。
+const QUEUE_WAIT_MS = Math.max(0, Number(process.env.TRANSCODE_QUEUE_WAIT_MS == null ? 8000 : process.env.TRANSCODE_QUEUE_WAIT_MS) || 0);
 // 转码结果留 30 分钟：够同一集被反复起播/拖动，也不会把临时目录撑爆（容器里 /tmp 是 tmpfs）。
 const TTL_MS = Math.max(60 * 1000, Number(process.env.HLS_TC_TTL_MS || 30 * 60 * 1000) || 30 * 60 * 1000);
 // 单个转码任务的硬超时：ffmpeg 卡死时若不主动 kill，running 计数永不归零，最终把并发槽位占满导致转码永久不可用。
@@ -26,14 +29,16 @@ let running = 0;
 const STATS = { started: 0, done: 0, failed: 0, lastError: "", lastAt: 0 };
 
 export function hlsTranscodeStats() {
-  return { available: transcodeAvailable(), active: running, jobs: jobs.size, limit: MAX_CONCURRENT, ttlMs: TTL_MS, jobTimeoutMs: JOB_TIMEOUT_MS, ...STATS };
+  return { available: transcodeAvailable(), active: running, jobs: jobs.size, limit: MAX_CONCURRENT, queueWaitMs: QUEUE_WAIT_MS, ttlMs: TTL_MS, jobTimeoutMs: JOB_TIMEOUT_MS, ...STATS };
 }
 
 function jobKey(epId, quality) {
   return String(epId) + "-" + String(quality);
 }
 
-function createJob({ provider, epId, quality, logger }) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function createJob({ provider, epId, quality, logger }) {
   const key = jobKey(epId, quality);
   const existing = jobs.get(key);
   if (existing) {
@@ -46,7 +51,20 @@ function createJob({ provider, epId, quality, logger }) {
       return existing;
     }
   }
-  if (running >= MAX_CONCURRENT) throw fail("BUSY", "同时转码数已达上限（" + MAX_CONCURRENT + "），请稍后重试");
+  if (running >= MAX_CONCURRENT) {
+    const deadline = Date.now() + QUEUE_WAIT_MS;
+    while (running >= MAX_CONCURRENT) {
+      // 排队期间别的请求可能已经把同一个任务建好了，直接复用，别重复转。
+      const again = jobs.get(key);
+      if (again && again.state !== "failed") { again.touched = Date.now(); return again; }
+      if (Date.now() >= deadline) {
+        const err = fail("BUSY", "同时转码数已达上限（" + MAX_CONCURRENT + "），请稍后重试");
+        err.retryAfter = 3;
+        throw err;
+      }
+      await sleep(150);
+    }
+  }
   const dir = path.join(ROOT, key);
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
@@ -202,7 +220,7 @@ function checkParams(req, quality) {
 export async function serveTranscodePlaylist({ provider, epId, quality, req, res, logger, authSuffix = "" }) {
   checkParams(req, quality);
   if (!/^\d{1,30}$/.test(String(epId))) throw fail("BAD_INPUT", "剧集 id 无效");
-  const job = createJob({ provider, epId, quality, logger });
+  const job = await createJob({ provider, epId, quality, logger });
   const ok = await waitForPlaylist(job, job.state === "done" ? 2000 : 25000);
   if (!ok) {
     if (job.state === "failed") throw fail("UPSTREAM_ERROR", "转码失败：" + (job.error || "未知错误"));
