@@ -72,7 +72,7 @@
 ### 前置条件
 
 - Docker Engine 20.10+ 或 Docker Desktop（需要 `docker compose` v2）
-- 能访问 ghcr.io。镜像已设为 Public，直接拉取无需登录；拉取慢时可先 `docker login ghcr.io`
+- 能访问 ghcr.io 或 Docker Hub。两个仓库的镜像都已公开，直接拉取无需登录；某个仓库拉取慢时可换另一个，或先 `docker login`
 
 ### 三步启动
 
@@ -123,6 +123,8 @@ docker compose down -v                        # 连数据卷一起删（账号/�
 
 仓库根目录的 [compose.yaml](compose.yaml) 默认使用 `ghcr.io/kid941005/hongguo-web:latest`，并已带上完整的加固选项（read_only、tmpfs /tmp、cap_drop ALL、no-new-privileges、非 root）与常用环境变量注释。改端口、加口令、调并发都在这个文件里，改完 `docker compose up -d` 生效。
 
+同一份镜像也会同步推送到 Docker Hub：`docker.io/kid941005/hongguo-web:latest`，标签与 GHCR 完全一致；ghcr 拉不动时把 image 换成它即可。
+
 ### 不克隆代码
 
 任意空目录新建 compose.yaml：
@@ -167,7 +169,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.12`。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.12`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.12`）。
 
 ### 镜像与标签
 
@@ -177,7 +179,14 @@ docker run -d --name hongguo-web \
 | 打 v* 标签 | `:版本号` 与 `:latest`（`:latest` 随最新正式版前移） |
 | 手动 workflow_dispatch | `:edge` |
 
-镜像为 linux/amd64 + linux/arm64 多架构；构建前会先跑离线自测。构建记录见 Actions，镜像在 GitHub Packages。
+镜像为 linux/amd64 + linux/arm64 多架构；构建前会先跑离线自测。一次构建同时推送到两个仓库、标签一一对应：
+
+| 仓库 | 地址 |
+| --- | --- |
+| GitHub Packages | `ghcr.io/kid941005/hongguo-web` |
+| Docker Hub | `docker.io/kid941005/hongguo-web` |
+
+构建记录见 Actions。Docker Hub 侧依赖仓库 secrets `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`（Access Token，Read & Write）；未配置时 workflow 只推 GHCR，不会失败。
 
 ## 配置
 
@@ -193,7 +202,7 @@ docker run -d --name hongguo-web \
 | 放大并发播放 | environment.MAX_STREAMS: `"12"` |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.12` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.12`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.12` |
 
 ### 基础
 

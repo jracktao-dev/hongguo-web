@@ -20,19 +20,40 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # 同一份镜像同时推 GHCR 与 Docker Hub。Docker Hub 依赖两个仓库密钥：
+      #   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN（Access Token，Read & Write 权限）
+      # 未配置时只推 GHCR，构建不会失败。
       - name: Resolve image tags
         id: meta
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -eu
-          repo="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          ghcr="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          name="$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          dh_user="$(echo "${DOCKERHUB_USERNAME}" | tr '[:upper:]' '[:lower:]')"
+          dh_repo=""
+          if [ -n "${dh_user}" ]; then
+            dh_repo="docker.io/${dh_user}/${name}"
+          fi
+
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             version="${GITHUB_REF_NAME#v}"
-            echo "tags=${repo}:${version},${repo}:latest" >> "$GITHUB_OUTPUT"
-            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            tags="${ghcr}:${version},${ghcr}:latest"
+            if [ -n "${dh_repo}" ]; then
+              tags="${tags},${dh_repo}:${version},${dh_repo}:latest"
+            fi
           else
-            echo "tags=${repo}:edge" >> "$GITHUB_OUTPUT"
-            echo "version=edge" >> "$GITHUB_OUTPUT"
+            version=edge
+            tags="${ghcr}:edge"
+            if [ -n "${dh_repo}" ]; then
+              tags="${tags},${dh_repo}:edge"
+            fi
           fi
+
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "dockerhub=${dh_repo}" >> "$GITHUB_OUTPUT"
 
       # 密钥派生/分块解密/播放签名这些纯逻辑一旦改坏，镜像是能构建成功的，
       # 只是上线后所有播放失效。构建前先离线自测（不联网）。
@@ -51,6 +72,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.meta.outputs.dockerhub != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
