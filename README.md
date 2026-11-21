@@ -512,7 +512,7 @@ hongguo-web/
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
 
 - **v0.14.13**：发布流程变更——同一份镜像在推送 GHCR 的同时同步推送到 Docker Hub（`docker.io/kid941005/hongguo-web`），标签与 GHCR 完全一致；workflow 未配置 Docker Hub secrets 时自动跳过、只推 GHCR。功能与 v0.14.12 完全一致。
-- **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。
+- **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。 本机 8787 容器已升级到该版本（`/health` 报 `0.14.14`，红果官方通道探测恢复 `status: ok / channel: official`）。
 - **v0.14.12**：修复「播放加载超时」误报。原来起播 8 秒没画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS / 服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集 / 切清晰度 / 深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。本机 8787 容器已升级到该版本（`/health` 报 `0.14.12`，桌面/移动端播放回归 26/26 通过）。
 - **v0.14.11**：新增「访问口令门」：设了 TOKEN 的实例打开页面先弹口令输入框（首页不再刷成一屏 401），口令填对即记住并自动重载；登录/注册被口令拦住时提示「本站需要访问口令」并引导填写；菜单「账号 → 🔑 口令」可随时重填或清除。服务端 `/health` 增 `tokenRequired` 字段，口令失败改用独立业务码 `TOKEN_REQUIRED`（仍是 401），前端据此区分「站点要口令」与「账号登录态失效」。
 - **v0.14.10**：`/api/sources/active` 不再按管理写拦截：切换当前源属于普通操作（不执行脚本），未设 TOKEN 的公网反代部署下前端切源不再 403；源导入/删除/更新/自检/日志仍只对内网开放。
