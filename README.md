@@ -11,7 +11,7 @@
   <img src="docs/screenshots/home.png" alt="红果短剧网页版首页" width="88%">
 </p>
 
-<p align="center"><b>把红果短剧搬进浏览器。</b>一个 Docker 容器，自带内置红果源，也兼容糖葫芦（THLRedGuo / CatPaw）格式的单文件 JS 源。</p>
+<p align="center"><b>把红果短剧搬进浏览器。</b>一个 Docker 容器，内置红果源开箱即用，也兼容糖葫芦（THLRedGuo / CatPaw）格式的单文件 JS 源。</p>
 
 > 仅供个人学习与自用。内容版权归各平台所有，请勿用于商业分发。
 
@@ -19,11 +19,11 @@
 
 ## 目录
 
-- [为什么是它](#为什么是它)
+- [它解决什么问题](#它解决什么问题)
 - [功能](#功能)
 - [截图](#截图)
 - [快速开始](#快速开始)
-- [部署方式](#部署方式)
+- [部署](#部署)
 - [配置](#配置)
 - [使用指南](#使用指南)
 - [自定义 JS 源](#自定义-js-源)
@@ -35,22 +35,22 @@
 - [开发与自测](#开发与自测)
 - [许可与致谢](#许可与致谢)
 
-## 为什么是它
+## 它解决什么问题
 
-红果的网页端并不好直接看：官方播放接口要签名、视频是 CENC 加密、清晰度还分成 HEVC / VVC / H.264 几套编码。这个项目把这些麻烦全都留在服务端：
+红果的网页端几乎没法直接看：播放地址要现场签名，视频是 CENC 加密，清晰度还混用 HEVC / VVC / H.264 三种编码。本项目把这些麻烦全部收进服务端，浏览器面对的只是一个普通网站。
 
-- **浏览器只和本服务通信**：签名取址、CENC 解密、Range 转发、HLS 重写、VVC 转码都在容器里完成，浏览器拿到的就是普通的 HLS / MP4。
-- **一个地址看全部**：首页、分类、搜索、推荐、猜你喜欢、详情、选集、播放、账号、历史、收藏、追更，一套 UI 全包，桌面和手机同一页面。
-- **不锁死在一个源**：内置红果之外，可以导入任意符合糖葫芦格式的单文件 JS 源；支持多源聚合搜索与播放失败自动换源。
-- **自托管、可加固**：SQLite 存个人数据，命名卷持久化；容器默认非 root、只读根文件系统、丢弃全部 capability。
+- **浏览器只跟本服务说话。** 签名取址、CENC 分块解密、Range 转发、HLS 清单重写、VVC / HEVC 转码都在容器里完成，前端拿到的是标准 HLS / MP4。
+- **一个站点看全部内容。** 首页、分类、搜索、推荐、猜你喜欢、详情、选集、播放、账号、历史、收藏、追更在同一套界面里，桌面与手机共用一套页面。
+- **数据源可扩展。** 内置红果之外，任何符合糖葫芦（THLRedGuo / CatPaw）规范的单文件 JS 源都能导入；支持多源并发聚合搜索与播放失败自动换源。
+- **自托管、可加固。** 个人数据存 SQLite，命名卷持久化；容器默认非 root、只读根文件系统、丢弃全部 capability。
 
 ## 功能
 
 | 模块 | 能力 |
 | --- | --- |
-| 内置红果源 | 服务端 V5 签名取址（SM3 + x-helios / x-medusa / x-ss-stub）+ CENC 分块解密 + Range 转发；360P H.264、720P VVC 服务端转码、1080P HEVC，按浏览器解码能力自动选档；系列剧支持官方季表切换 |
+| 内置红果源 | 服务端 V5 签名取址（SM3 + x-helios / x-medusa / x-ss-stub）+ CENC 分块解密 + Range 转发；360P H.264、720P VVC 与 1080P HEVC 均由服务端转成 H.264 HLS，按浏览器解码能力自动选档；系列剧支持官方季表切换 |
 | JS 源 | 单文件 spider，独立 worker 线程沙箱；网页内导入 / 自检 / 删除 / 自动更新；多源聚合搜索与播放失败换源 |
-| 检索与发现 | 首页分类、分类分页、搜索、推荐页（四榜单真实评分合并）、猜你喜欢（协同过滤 + 相似题材 + 热门兜底）、无限滚动 |
+| 检索与发现 | 首页分类、分类分页、搜索、推荐页（多榜单按真实评分合并）、猜你喜欢（协同过滤 + 相似题材 + 热门兜底）、无限滚动 |
 | 播放 | HLS 多码率切档、当前分辨率徽标、倍速首尾循环、全屏、下一集预取、跨集自动连播、播放失败诊断、替代源 |
 | 个人数据 | 账号登录、观看历史 / 续播、收藏、追剧提醒、倍速偏好，跨设备同步（SQLite） |
 | 界面 | 深色 / 浅色 / 跟随设备三档主题、响应式、手机端菜单抽屉、PWA |
@@ -72,7 +72,7 @@
 ### 前置条件
 
 - Docker Engine 20.10+ 或 Docker Desktop（需要 `docker compose` v2）
-- 能访问 ghcr.io 或 Docker Hub。两个仓库的镜像都已公开，直接拉取无需登录；某个仓库拉取慢时可换另一个，或先 `docker login`
+- 能访问 ghcr.io 或 Docker Hub。两个仓库的镜像都已公开，直接拉取无需登录；某个仓库拉得慢就换另一个，必要时先 `docker login`
 
 ### 三步启动
 
@@ -82,7 +82,7 @@ cd hongguo-web
 docker compose up -d
 ```
 
-首次启动会拉取镜像并创建：
+首次启动会拉取镜像并创建两样东西：
 
 - 容器：`hongguo-web`
 - 命名卷：`hongguo-data`（账号、历史、收藏、导入的源都在这里）
@@ -100,10 +100,10 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.14","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
+{"service":"hongguo-web","ok":true,"version":"0.14.15","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
 ```
 
-也可以跑仓库自带的冒烟脚本（会检查健康、源列表、首页、猜你喜欢、通道探针等）：
+也可以跑仓库自带的冒烟脚本（检查健康、源列表、首页、猜你喜欢、通道探针等）：
 
 ```bash
 BASE=http://127.0.0.1:8787 node server/scripts/smoke.mjs
@@ -117,13 +117,13 @@ docker compose down                           # 停止并删除容器，数据�
 docker compose down -v                        # 连数据卷一起删（账号/历史/源全部丢失）
 ```
 
-## 部署方式
+## 部署
 
 ### 用现成镜像（推荐）
 
-仓库根目录的 [compose.yaml](compose.yaml) 默认使用 `ghcr.io/kid941005/hongguo-web:latest`，并已带上完整的加固选项（read_only、tmpfs /tmp、cap_drop ALL、no-new-privileges、非 root）与常用环境变量注释。改端口、加口令、调并发都在这个文件里，改完 `docker compose up -d` 生效。
+仓库根目录的 [compose.yaml](compose.yaml) 默认使用 `ghcr.io/kid941005/hongguo-web:latest`，并已写好完整的加固选项（read_only、tmpfs /tmp、cap_drop ALL、no-new-privileges、非 root）与常用环境变量注释。换端口、加口令、调并发都改这个文件，改完 `docker compose up -d` 生效。
 
-同一份镜像也会同步推送到 Docker Hub：`docker.io/kid941005/hongguo-web:latest`，标签与 GHCR 完全一致；ghcr 拉不动时把 image 换成它即可。
+同一份镜像同步推送到 Docker Hub：`docker.io/kid941005/hongguo-web:latest`，标签与 GHCR 一一对应；ghcr 拉不动时把 image 换成它即可。
 
 ### 不克隆代码
 
@@ -169,7 +169,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.14`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.14`）。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.15`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.15`）。
 
 ### 镜像与标签
 
@@ -179,7 +179,7 @@ docker run -d --name hongguo-web \
 | 打 v* 标签 | `:版本号` 与 `:latest`（`:latest` 随最新正式版前移） |
 | 手动 workflow_dispatch | `:edge` |
 
-镜像为 linux/amd64 + linux/arm64 多架构；构建前会先跑离线自测。一次构建同时推送到两个仓库、标签一一对应：
+镜像为 linux/amd64 + linux/arm64 多架构；构建前会先跑离线自测。一次构建同时推两个仓库、标签一一对应：
 
 | 仓库 | 地址 |
 | --- | --- |
@@ -190,7 +190,7 @@ docker run -d --name hongguo-web \
 
 ## 配置
 
-所有变量都可以写在 [compose.yaml](compose.yaml) 的 environment 里，也可以用同名环境变量覆盖。改完 `docker compose up -d`。
+所有变量都能写在 [compose.yaml](compose.yaml) 的 environment 里，也可以用同名环境变量覆盖；改完 `docker compose up -d` 生效。
 
 ### 常见定制
 
@@ -200,9 +200,10 @@ docker run -d --name hongguo-web \
 | 连容器端口一起换 | environment.PORT 与 ports 右边改成同一个值 |
 | 加访问口令 | environment.TOKEN 填口令。浏览器会直接弹出「需要访问口令」输入框（也可 `http://<host>:8787/?at=<口令>` 打开），填一次记住，之后自动给接口和媒体地址带上 `at=` |
 | 放大并发播放 | environment.MAX_STREAMS: `"12"` |
+| 低配机器省 CPU | environment.HONGGUO_HEVC_TRANSCODE: `"0"`（关掉 1080P 转码，只给原始 HEVC 直连） |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.14`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.14` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.15`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.15` |
 
 ### 基础
 
@@ -213,20 +214,27 @@ docker run -d --name hongguo-web \
 | DATA_DIR | /app/data | 配置、用户源、缓存、账号库（hongguo.db）目录；必须可写并挂持久卷 |
 | SOURCES_DIR | /app/sources/builtin | 内置源目录，镜像自带 |
 | TOKEN | 空 | 设置后所有 /api/* 需带 `Authorization: Bearer <TOKEN>` 或 `?at=<TOKEN>`（`?token=` 兼容旧链接）；未设置时管理写接口与 /api/metrics 只接受内网来源 |
+| TRUST_PROXY | 空 | 1 时按 X-Forwarded-For 第一跳识别客户端 IP；只在可信反向代理后开启，否则可被伪造 |
 
-### 播放与转码
+### 播放与清晰度
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | MAX_STREAMS | 6 | 内置红果解密流最大并发数 |
 | ALLOW_PRIVATE_MEDIA | 空 | 1 时允许 /api/media、/api/hls 代理内网地址（默认拒绝，防 SSRF） |
 | ALLOW_PRIVATE_FETCH | 空 | 1 时允许 JS 源 fetch 与按 URL 导入源访问内网地址（默认拒绝，防 SSRF） |
-| TRUST_PROXY | 空 | 1 时按 X-Forwarded-For 第一跳识别客户端 IP；只在可信反向代理后开启，否则可被伪造 |
 | HONGGUO_DEVICE_ID | 空 | 钉死红果播放通道的匿名设备号（10–20 位纯数字）；不设时首次注册后存 DATA_DIR/device.json 长期复用 |
 | HONGGUO_INSTALL_ID | 空 | 配合 HONGGUO_DEVICE_ID 的 install id（10–20 位纯数字） |
 | HONGGUO_OFFICIAL_UNSIGNED | 空 | 1 时改用旧的「无签名 + 注册身份」取址请求；仅在上游确已关闭签名校验时使用 |
 | HONGGUO_HEVC_TRANSCODE | 1 | 设为 `0` 关闭 1080P（HEVC）的服务端转码：关闭后 1080P 只给原始 HEVC 直连流，设备不支持 HEVC 时会自动回落到 720P 等转码档；低配 NAS 担心 CPU 占用可关 |
 | HONGGUO_MODEL_CACHE_MAX | 512 | 官方播放模型缓存条目上限（最小 16） |
+
+### 服务端转码
+
+浏览器没有 VVC（H.266）解码器；1080P 是 HEVC、360P 是 H.264，中间几档只有装了 ffmpeg 7.1+ 的服务端转成 H.264 HLS 才能播。相关参数：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
 | FFMPEG_PATH | ffmpeg | 服务端转码用的 ffmpeg；官方镜像已装 7.1+，裸机需自行安装 |
 | TRANSCODE_MAX_INPUT_BYTES | 100663296 | 单集转码输入上限（默认 96 MB） |
 | TRANSCODE_MAX_CONCURRENT | 2 | 同时进行的转码任务上限；槽位排满时先排队等待（见下一行），等不到才返回 503 BUSY |
@@ -246,7 +254,7 @@ docker run -d --name hongguo-web \
 | SOURCE_UPDATE_INTERVAL_HOURS | 6 | 自动检查间隔（小时，最小 1） |
 | SOURCE_UPDATE_START_DELAY_SECONDS | 15 | 启动后首次检查延迟（秒） |
 
-### 播放通道监控
+### 通道监控与告警
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
@@ -259,12 +267,12 @@ docker run -d --name hongguo-web \
 
 ### 浏览、搜索与发现
 
-- **顶栏**：桌面端为「外观 / 账号 / 历史 / 源」四组下拉；手机端收进右上角「☰ 菜单」抽屉，点一下展开全部分组，一格一点即达。
+- **顶栏**：桌面端是「外观 / 账号 / 历史 / 源」四组下拉；手机端收进右上角「☰ 菜单」抽屉，点一下展开全部分组，一格一点即达。
 - **首页 / 分类**：首页给分类与推荐，分类页分页浏览；首页、分类、搜索、推荐页都支持无限滚动，底部保留「加载更多」兜底。
 - **推荐页**：把内置红果四个榜单（热播 / 真人 / 漫剧 / AI）按真实评分合并排序，卡片显示评分。
 - **猜你喜欢**：基于观看历史的三路信号合并排序——协同过滤、相似题材、热门兜底；登录后跨设备一致，未登录只用本机历史做种子。
 - **搜索**：红果内置源按「官网索引 → App 签名通道 → 首页推荐池」三级降级；官网索引每页 10 条，支持翻页；关键词超过 30 字按前 30 字检索。
-- **多源聚合搜索**：源下拉框选「🔎 全部源（聚合搜索）」后搜索，所有可用源并发查询、谁先返回先展示，卡片带源名徽标；顶部提示条显示已返回源数、总条数与各源失败原因。模板与示例源不参与聚合。
+- **多源聚合搜索**：源下拉框选「🔎 全部源（聚合搜索）」再搜索，所有可用源并发查询、谁先返回先展示，卡片带源名徽标；顶部提示条显示已返回源数、总条数与各源失败原因。模板与示例源不参与聚合。
 
 ### 播放与清晰度
 
@@ -274,8 +282,8 @@ docker run -d --name hongguo-web \
 - **倍速**：0.5×–2× 首尾循环（点 1.0× 前进，逗号键反向），刷新和换集保持。
 - **全屏**：按钮 / 双击画面 / F。
 - **下一集预取**：接近结尾时后台预取下一集首段，点「下一集」更快。
-- **跨集自动连播**：默认开启，可点「连播 开 / 连播 关」关闭；关闭后播完停在当前集并落盘进度。播放器会区分「假结束」与真片尾，假结束自动恢复当前集且每集只恢复一次。
-- **播放失败排查**：浮层会区分「内容源暂时不可用 / 设备不支持 VVC / 解不了这一档画面 / 地址可用但播放异常」，并给出重试、切 360P 兼容或换源的对应操作。加载慢先提示「网络较慢，正在加载，请稍候…」，真正超时才报错，不会把「慢」误判成「坏」。
+- **跨集自动连播**：默认开启，可点「连播 开 / 连播 关」关闭；关闭后播完停在当前集并落盘进度。服务端转码是边转边追加分片的 HLS，只有清单出现结束标记才算真的播完；「假结束」只会续播当前集，不会误跳下一集。
+- **播放失败排查**：浮层会区分「内容源暂时不可用 / 设备不支持 VVC / 解不了这一档画面 / 地址可用但播放异常」，并给出重试、切 360P 兼容或换源的对应操作。加载慢先提示「网络较慢，正在加载，请稍候…」，真正超时才报错，不会把「慢」误判成「坏」。转码排队时提示「转码排队中，正在重试…」，保持原清晰度重试，不降档。
 
 ### 账号与多设备同步
 
@@ -320,7 +328,7 @@ Chrome / Edge 地址栏会出现「安装」；手机浏览器「添加到主屏
 
 ## 自定义 JS 源
 
-源是单个 .js 文件，声明一个全局 spider 对象。每个源在独立的 worker_threads 线程里运行（默认 64 MB 内存上限），只通过消息通道获得 fetch，拿不到 require / process / 文件系统等 Node API。
+源是单个 .js 文件，声明一个全局 spider 对象。每个源跑在独立的 worker_threads 线程里（默认 64 MB 内存上限），只通过消息通道拿到 fetch，碰不到 require / process / 文件系统等 Node API。
 
 ```js
 var spider = {
@@ -440,7 +448,7 @@ var spider = {
 | GET | /api/media?u=&r=&at= | 媒体透传（支持 Range，r 为 Referer） |
 | GET | /api/hls?u=&r=&at= | HLS 清单重写（分片走 /api/media；重写出的子清单/分片地址自动带上同一 at） |
 | GET/HEAD | /api/stream/:epId?q=&at=&vvc= | 内置红果分集流（服务端解密 + Range）；q 支持 auto / 1080p / 720p / 540p / 480p / 360p / compat |
-| GET | /api/tc/:epId/:q/index.m3u8 | 内置红果 VVC 档的服务端 HLS 转码清单 |
+| GET | /api/tc/:epId/:q/index.m3u8 | 内置红果 VVC / HEVC 档的服务端 HLS 转码清单 |
 | GET | /api/tc/:epId/:q/:file | 转码清单里的 init.mp4 / seg_NNNNN.m4s（支持 Range） |
 
 ### 错误码与日志
@@ -455,7 +463,7 @@ var spider = {
 hongguo-web/
 ├─ Dockerfile / compose.yaml / .dockerignore
 ├─ LICENSE
-├─ .github/workflows/docker.yml     # GHCR 构建：main→:edge，tag→:版本+:latest
+├─ .github/workflows/docker.yml     # 构建并推送 GHCR + Docker Hub：main→:edge，tag→:版本+:latest
 ├─ docs/                            # research.md + screenshots/
 ├─ server/
 │  ├─ index.mjs                     # 入口：装配 provider + 源管理 + 目录 + HTTP + 监控
@@ -467,8 +475,8 @@ hongguo-web/
 │  ├─ catalog.mjs                   # 内置源与 JS 源归一成同一套 API
 │  ├─ media.mjs                     # /api/media 透传 + /api/hls 重写
 │  ├─ stream.mjs                    # /api/stream 解密流（Range、并发、去重）
-│  ├─ transcode.mjs                 # VVC → H.264 转码核心
-│  ├─ hls-tc.mjs                    # VVC 档 HLS 转码任务
+│  ├─ transcode.mjs                 # VVC / HEVC → H.264 转码核心
+│  ├─ hls-tc.mjs                    # 转码档 HLS 任务与排队
 │  ├─ monitor.mjs                   # 播放通道探针与告警
 │  ├─ recommend.mjs                 # 推荐 / 猜你喜欢排序
 │  ├─ db.mjs / users.mjs            # SQLite 与用户数据
@@ -476,7 +484,7 @@ hongguo-web/
 │  ├─ selftest.mjs                  # 离线自测（182 断言）
 │  ├─ scripts/smoke.mjs             # 发布冒烟
 │  └─ sources/                      # JS 源运行时、沙箱、管理
-├─ sources/builtin/                 # hongguo（内置）/ qimao / xifan / xingya / niuniu / template / maccms
+├─ sources/builtin/                 # qimao / xifan / xingya / niuniu / template / maccms（红果是内置伪源，由 provider 提供）
 └─ web/                             # 前端静态页 + hls.js + PWA
 ```
 
@@ -496,7 +504,7 @@ hongguo-web/
 - **内置红果搜索**：主通道是官网搜索 JSON 接口；失败才降级首页推荐池检索（fallback:true、结果不全）。
 - **需要 webview 嗅探的源（parse: 1）不可用**：本服务没有浏览器内核。
 - **同时播放上限**：内置红果解密流默认 6 路并发（MAX_STREAMS 可调）；同一集同一档位多人同时点开只取址一次。
-- **红果档位与编码**：1080P 是 HEVC（需设备/浏览器支持），360P 是 H.264；官方 360P–720P 中间档是 H.266/VVC，浏览器没有解码器，只有服务端装了 ffmpeg 7.1+ 才转成 H.264 HLS。转码约 12× 实时（单核），并发多了会排队。
+- **红果档位与编码**：360P 是 H.264；1080P 是 HEVC、360P–720P 中间档是 H.266/VVC，浏览器都没有解码器，只有服务端装了 ffmpeg 7.1+ 才转成 H.264 HLS（1080P 转码可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭，关闭后 1080P 只给 HEVC 直连，设备不支持则回落低档）。转码约 12× 实时（单核），并发多了会排队；排队等不到会返回 503 并让前端原档重试。
 - **红果加密格式**：只支持 CENC（AES-128-CTR）、每样本 8 字节 IV、无 subsample、moov 前置的非分片 MP4；上游若改格式会返回 CENC_UNSUPPORTED，而不是花屏。
 - **官方取址会被限流**：按匿名设备身份 + 出口 IP 双重限流，空正文 / 403 / 429 会进入冷却并回落 360P；这是有意为之，避免把 IP 打进惩罚窗。
 - **替代源依赖同名剧**：按标题相似度跨源匹配；红果独播剧、译名差异大的剧通常找不到候选。
@@ -512,10 +520,10 @@ hongguo-web/
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
 
-- **v0.14.15**：修复「一集没播完就自动跳下一集、并且画质被降」。服务端转码出的 HLS 是**边转边追加分片**的 EVENT 清单，`video.duration` 会一路变长；播放器此前用「当前时间接近 duration」判断片尾，于是转码刚产出 3–4 秒时就误判播完，直接切下一集（连播开着时表现为疯狂跳集），切集又会打断刚建立的转码而回落到低档。现在改为：清单里出现 `EXT-X-ENDLIST`（`details.live === false`）之后才允许片尾判定，转码期间 `ended` 事件只续播不切集。另外把「转码槽位排满」从立即 503 改为**先排队最多 8 秒**（`TRANSCODE_QUEUE_WAIT_MS`），并让前端遇到 503/429 时**原档重试**而不是降清晰度，避免一次排队把整部剧永久压到 540P。 本机 8787 容器已升级到该版本（`/health` 报 `0.14.15`，转码指标 `queueWaitMs: 8000`；红果 1080P 连续播放 130 秒停留第 1 集、画质保持 1080P、无 JS 错误）。
+- **v0.14.15**：修复「一集没播完就自动跳下一集、并且画质被降」。服务端转码出的 HLS 是**边转边追加分片**的 EVENT 清单，`video.duration` 会一路变长；播放器此前用「当前时间接近 duration」判断片尾，于是转码刚产出 3–4 秒时就误判播完，直接切下一集（连播开着时表现为疯狂跳集），切集又会打断刚建立的转码而回落到低档。现在改为：清单里出现 `EXT-X-ENDLIST`（`details.live === false`）之后才允许片尾判定，转码期间 `ended` 事件只续播不切集。另外把「转码槽位排满」从立即 503 改为**先排队最多 8 秒**（`TRANSCODE_QUEUE_WAIT_MS`），并让前端遇到 503/429 时**原档重试**而不是降清晰度，避免一次排队把整部剧永久压到 540P。 发版前实测：红果 1080P 连续播放 130 秒始终停在第 1 集、画质保持 1080P、无 JS 错误。
+- **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。 发版后官方通道探测恢复 `status: ok / channel: official`。
 - **v0.14.13**：发布流程变更——同一份镜像在推送 GHCR 的同时同步推送到 Docker Hub（`docker.io/kid941005/hongguo-web`），标签与 GHCR 完全一致；workflow 未配置 Docker Hub secrets 时自动跳过、只推 GHCR。功能与 v0.14.12 完全一致。
-- **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。 本机 8787 容器已升级到该版本（`/health` 报 `0.14.14`，红果官方通道探测恢复 `status: ok / channel: official`）。
-- **v0.14.12**：修复「播放加载超时」误报。原来起播 8 秒没画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS / 服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集 / 切清晰度 / 深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。本机 8787 容器已升级到该版本（`/health` 报 `0.14.12`，桌面/移动端播放回归 26/26 通过）。
+- **v0.14.12**：修复「播放加载超时」误报。原来起播 8 秒没画面就弹「播放加载超时（8 秒未响应），可能是当前数据源受限」，冷启动转码或 NAS 上行较慢时（720P 服务端转码首块常见 8–15 秒）会把「慢」误判成「坏」。现在分两级：8 秒还没数据只在底部提示「网络较慢，正在加载，请稍候…」，HLS / 服务端转码 25 秒、直连 15 秒仍收不到任何数据才弹错误横幅；期间只要拿到元数据或缓冲数据就自动撤销监测。同时修复换集 / 切清晰度 / 深链自动起播时 `play()` 被新 load 取代抛出的 `AbortError` 被当成「播放失败」弹出的误报。发版前桌面/移动端播放回归 26/26 通过。
 - **v0.14.11**：新增「访问口令门」：设了 TOKEN 的实例打开页面先弹口令输入框（首页不再刷成一屏 401），口令填对即记住并自动重载；登录/注册被口令拦住时提示「本站需要访问口令」并引导填写；菜单「账号 → 🔑 口令」可随时重填或清除。服务端 `/health` 增 `tokenRequired` 字段，口令失败改用独立业务码 `TOKEN_REQUIRED`（仍是 401），前端据此区分「站点要口令」与「账号登录态失效」。
 - **v0.14.10**：`/api/sources/active` 不再按管理写拦截：切换当前源属于普通操作（不执行脚本），未设 TOKEN 的公网反代部署下前端切源不再 403；源导入/删除/更新/自检/日志仍只对内网开放。
 - **v0.14.9**：全项目审计修复：设 TOKEN 时 JS 源 HLS 子清单/分片请求 401、`HEAD /api/media` 上游连接悬挂、`/api/play` 响应泄漏源侧 headers 与上游直链、写接口非对象 body 报 500、追更失败无退避与集数抖动误报、JS 源 URL 垫片不保真、历史封面不走代理、历史弹窗文案、Service Worker 缓存 `/health`、`engines` 版本与重复 CSS。
