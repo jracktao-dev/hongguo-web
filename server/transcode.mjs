@@ -38,6 +38,12 @@ export function transcodeStats() {
   return { available: transcodeAvailable() };
 }
 
+// 1080P 档是 HEVC(hvc1)：Chrome/Edge 默认解不了，但 ffmpeg 可以。
+// 用 HONGGUO_HEVC_TRANSCODE=0 可关掉这条链路（弱 NAS 上省 CPU），默认开启。
+export function hevcTranscodeEnabled() {
+  return String(process.env.HONGGUO_HEVC_TRANSCODE || "1") !== "0";
+}
+
 function boxes(buf, start, end) {
   const list = [];
   let off = start;
@@ -191,9 +197,28 @@ export async function stageVvcInput(stream) {
     const aFile = path.join(dir, "a.mp4");
     fs.writeFileSync(vFile, annex);
     if (audio) fs.writeFileSync(aFile, audio);
-    return { dir, vFile, aFile, hasAudio: Boolean(audio), bytesIn: buf.length };
+    return { dir, vFile, aFile, kind: "vvc", hasAudio: Boolean(audio), bytesIn: buf.length };
   } catch (error) {
     // 写临时文件失败必须清掉刚建的目录，否则每次失败都泄漏一个 hg-tc-*。
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+// HEVC(hvc1) 档位：MP4 容器本身是标准的（moov/stbl 正常，ffmpeg 直接能读），
+// 不需要像 VVC 那样手工剥 NAL，只要把整集落盘后交给 ffmpeg 重编码成 H.264。
+export async function stageHevcInput(stream) {
+  const buf = await readAll(stream);
+  const layout = analyse(buf);
+  if (!/^(hvc1|hev1)$/.test(layout.video.entry)) {
+    throw fail("CODEC_UNSUPPORTED", "该档位不是 HEVC，无需服务端转码");
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hg-tc-"));
+  try {
+    const mp4File = path.join(dir, "in.mp4");
+    fs.writeFileSync(mp4File, buf);
+    return { dir, mp4File, kind: "hevc", hasAudio: Boolean(layout.audio), bytesIn: buf.length };
+  } catch (error) {
     fs.rmSync(dir, { recursive: true, force: true });
     throw error;
   }
@@ -205,7 +230,17 @@ export function dropStage(dir) {
 }
 
 // 转码共用的编码参数（输出封装由调用方追加）。
-export function h264Args({ vFile, aFile, hasAudio }) {
+// VVC：输入是裸 Annex B 码流（-f vvc）+ 另一份纯音频 MP4；
+// HEVC：输入就是标准 MP4，音视频一起读，并加码率上限避免 1080P 转出过大的文件。
+export function h264Args(staged) {
+  const { vFile, aFile, hasAudio } = staged || {};
+  if (staged && staged.kind === "hevc") {
+    const args = ["-hide_banner", "-v", "error", "-nostdin", "-i", staged.mp4File, "-map", "0:v:0"];
+    if (hasAudio) args.push("-map", "0:a:0");
+    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+      "-maxrate", "2500k", "-bufsize", "5000k", "-c:a", "copy");
+    return args;
+  }
   const args = ["-hide_banner", "-v", "error", "-nostdin", "-f", "vvc", "-i", vFile];
   if (hasAudio) args.push("-i", aFile);
   args.push("-map", "0:v:0");

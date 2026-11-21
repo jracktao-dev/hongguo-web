@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.mjs";
 import { QUALITIES } from "./stream.mjs";
-import { transcodeAvailable, stageVvcInput, dropStage, h264Args } from "./transcode.mjs";
+import { transcodeAvailable, stageVvcInput, stageHevcInput, hevcTranscodeEnabled, dropStage, h264Args } from "./transcode.mjs";
 
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const MAX_CONCURRENT = Math.max(1, Number(process.env.TRANSCODE_MAX_CONCURRENT || 2) || 2);
@@ -75,16 +75,20 @@ async function runJob(job, { provider, logger }) {
   let staged = null;
   try {
     const stream = await provider.stream(job.epId, { quality: job.quality });
+    const codec = String(stream.codec || "").toLowerCase();
     // 官方高清通道不可用（限流/熔断）时，provider 会静默回落成 360P 的 H.264 兼容流。
-    // 那不是 VVC，硬拿去转码只会在 mp4 解析处报「找不到视频轨」，对用户毫无意义；
+    // 那不是 VVC/HEVC，硬拿去转码只会在 mp4 解析处报「找不到视频轨」，对用户毫无意义；
     // 这里直接给出可读原因，让前端提示「稍后重试 / 选 360P」。
-    if (String(stream.codec || "").toLowerCase() !== "vvc") {
+    if (codec === "vvc") {
+      staged = await stageVvcInput(stream);
+    } else if (codec === "hevc" && hevcTranscodeEnabled()) {
+      staged = await stageHevcInput(stream);
+    } else {
       throw fail(
         "UPSTREAM_COOLDOWN",
         "官方高清通道暂时不可用（当前已回落 360P），无法提供 " + job.quality + " 转码；请稍后重试，或直接选择 360P 兼容线路"
       );
     }
-    staged = await stageVvcInput(stream);
   } catch (error) {
     job.state = "failed";
     job.error = String((error && error.message) || error);

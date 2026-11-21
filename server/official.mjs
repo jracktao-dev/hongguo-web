@@ -10,7 +10,9 @@ import { createDeviceStore } from "./device.mjs";
 // 红果（番茄小说 App，aid=8662）官方播放取址。
 //
 // 2026-11-16 复核（对齐 jackotom/hongguo-drama 与 tsukiyo-zero/hongguoTV 的可用实现）：
-//   1) 取址必须带完整签名头（x-argus / x-ladon），且必须使用「平台匿名注册的一次性设备身份」；
+//   0) 2026-11-20 起首选「V5 无正文 GET video_tab」（x-khronos/x-helios/x-medusa，不带 x-ss-stub/_rticket 之外的正文头），
+//      这是目前唯一稳定返回 1080P/720P 全档位的通道；下面的 V5 POST 与旧 x-argus 链路只作兜底。
+//   1) 旧链路必须带完整签名头（x-argus / x-ladon），且必须使用「平台匿名注册的一次性设备身份」；
 //      server/sign/argus.cjs 与参考实现的 x-argus / x-ladon 逐字节一致（20 组 GET/POST 用例）。
 //   2) 首选签名 GET /reading/bookapi/video_tab/multi_video_model/v1/；
 //      仅当返回空正文时才补发一次签名 POST /novel/player/multi_video_model/v1/（旧链路）。
@@ -410,6 +412,59 @@ export function createOfficial({ register, deriveContentKey, devices } = {}) {
     return parsePlayerModel(text, epId);
   }
 
+  // V5 无正文 GET video_tab（2026-11-20 上游唯一可用通道，对齐 jackotom/hongguo-drama 7.7）。
+  // 与 V5 POST 的区别：method=GET、body=null（正文摘要按空串算）、不发 x-ss-stub / x-ss-req-ticket、
+  // 不发 Content-Type/Content-Encoding；query 里带 video_id 等 video_tab 专属字段，走 73932 播放器档。
+  async function v5TabFetch({ epId, options = {}, host } = {}) {
+    const identity = await getPlayIdentity(Boolean(options.freshIdentity));
+    const base = host || (TAB_HOST + TAB_PATH);
+    const signed = signPlaybackV5({
+      base,
+      values: {
+        ...V5_DEVICE,
+        iid: String(identity.iid),
+        cdid: String(identity.cdid || ""),
+        device_id: String(identity.device_id),
+        video_id: String(epId),
+        video_id_type: "0",
+        device_level: "1",
+        need_all_video_definition: "1",
+        need_mp4_align: "0",
+        use_os_player: "0",
+        video_platform: "1024",
+        source: "0",
+        from_video_id: "",
+      },
+      body: null,
+      now: Date.now(),
+    });
+    stats.requests += 1;
+    stats.signed += 1;
+    const resp = await axios.request({
+      url: signed.url,
+      method: "get",
+      headers: { ...signed.headers, "User-Agent": UA, Accept: "application/json" },
+      timeout: MODEL_TIMEOUT,
+      responseType: "text",
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+    if (resp.status === 403 || resp.status === 429) {
+      stats.empty += 1;
+      quietUntil = Date.now() + EMPTY_COOLDOWN;
+      throw new Error("video_tab(v5) HTTP " + resp.status + "（风控）");
+    }
+    const text = typeof resp.data === "string" ? resp.data : JSON.stringify(resp.data || {});
+    if (resp.status !== 200) throw new Error("video_tab(v5) HTTP " + resp.status);
+    if (!text.trim()) {
+      stats.empty += 1;
+      quietUntil = Date.now() + EMPTY_COOLDOWN;
+      throw new Error("video_tab(v5) 空响应（上游限流）");
+    }
+    return parseTabModel(text, epId);
+  }
+
   async function signedFetch({ epId, legacy, options = {} }) {
     const identity = await getPlayIdentity(Boolean(options.freshIdentity));
     const ticket = typeof options.ticket === "number" ? options.ticket : Date.now();
@@ -575,9 +630,10 @@ export function createOfficial({ register, deriveContentKey, devices } = {}) {
         }
       }
     } else {
-      // V5 主链路：主 host → 备用 host（同一身份）→ 旧 video_tab → 旧 POST。
-      // 上游 2026-11-16 起只认 V5 签名，旧 x-argus 链路仅作最后兜底。
+      // 主链路：V5 无正文 GET video_tab → V5 POST 主/备 host → 旧 video_tab → 旧 POST。
+      // 2026-11-20 起上游对 V5 POST 与旧 x-argus 链路一律回 200 空正文，GET video_tab 才是可用通道。
       const chain = [
+        () => v5TabFetch({ epId: key, options }),
         () => v5Fetch({ epId: key, options }),
         () => v5Fetch({ epId: key, alternate: true, options }),
         () => signedFetch({ epId: key, legacy: false, options: { ...options, freshIdentity: true } }),
