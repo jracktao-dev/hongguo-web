@@ -136,8 +136,9 @@ services:
   hongguo-web:
     image: ghcr.io/kid941005/hongguo-web:latest
     container_name: hongguo-web
-    ports: ["8787:8787"]
+    ports: ["${PORT:-8787}:${PORT:-8787}"]
     environment:
+      PORT: "${PORT:-8787}"             # 监听端口，默认 8787
       TOKEN: ""                      # 需要访问口令就填
     volumes: ["hongguo-data:/app/data"]
     restart: unless-stopped
@@ -145,7 +146,7 @@ volumes:
   hongguo-data:
 ```
 
-然后 `docker compose up -d`。
+然后 `docker compose up -d`；换端口用 `PORT=9000 docker compose up -d`（上面的 `ports` 与 `PORT` 会一起跟着变）。
 
 ### host 网络模式（network_mode: host）
 
@@ -185,6 +186,8 @@ docker run -d --name hongguo-web \
   --read-only --tmpfs /tmp --security-opt no-new-privileges --cap-drop ALL \
   hongguo-web
 ```
+
+不用 compose 时换端口：把 `-p 8787:8787` 和 `-e PORT=8787` 一起改成同一个端口即可。
 
 想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.19`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.19`）。
 
