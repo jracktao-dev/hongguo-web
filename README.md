@@ -100,7 +100,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.17","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
+{"service":"hongguo-web","ok":true,"version":"0.14.18","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
 ```
 
 也可以跑仓库自带的冒烟脚本（检查健康、源列表、首页、猜你喜欢、通道探针等）：
@@ -169,7 +169,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.17`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.17`）。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.18`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.18`）。
 
 ### 镜像与标签
 
@@ -203,7 +203,7 @@ docker run -d --name hongguo-web \
 | 低配机器省 CPU | environment.HONGGUO_HEVC_TRANSCODE: `"0"`（关掉 1080P 转码，只给原始 HEVC 直连） |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.17`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.17` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.18`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.18` |
 
 ### 基础
 
@@ -520,7 +520,8 @@ hongguo-web/
 ## 版本说明
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
-- **v0.14.17**：起播与卡顿优化（P0-1/P0-2/P0-3）。① **边下边转**：以前要先把整集（1080P 7–10 MB）下载完才开始转码，冷启动首帧动辄 8 秒；现在只预读 moov（约 1 MB）就启动 ffmpeg，剩下的 mdat 边下边喂给它，实测 1080P 首个分片 8.0s → 2.0s、720P 2.7s → 2.0s。② **空闲自动取消**：播放端 60 秒不再取清单/分片就自动杀掉转码（`HLS_TC_IDLE_MS`），修复「页面关了 ffmpeg 还在空转、把并发槽位占满」。③ **默认档位自适应**：手机默认 720P、≤4 核机器 540P、慢网再降一档，桌面/高配仍默认最高档，避免小屏设备一上来就请求最重的 1080P 转码。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.17`，状态 healthy）。
+- **v0.14.18**：清晰度默认值修正。取消 v0.14.17 的「默认档位自适应」——不再按手机/核数/网络把默认清晰度降到 720P/540P，默认始终是「自动（最高，1080P）」，仅在最高档本机无法解码时才退到本机可播的最高档；自动降档只在解码失败时发生。v0.14.17 的边下边转（P0-1）与空闲自动取消（P0-2）保持不变。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.18`，状态 healthy）。
+- **v0.14.17**：起播与卡顿优化（P0-1/P0-2/P0-3）。① **边下边转**：以前要先把整集（1080P 7–10 MB）下载完才开始转码，冷启动首帧动辄 8 秒；现在只预读 moov（约 1 MB）就启动 ffmpeg，剩下的 mdat 边下边喂给它，实测 1080P 首个分片 8.0s → 2.0s、720P 2.7s → 2.0s。② **空闲自动取消**：播放端 60 秒不再取清单/分片就自动杀掉转码（`HLS_TC_IDLE_MS`），修复「页面关了 ffmpeg 还在空转、把并发槽位占满」。③ ~~默认档位自适应~~：曾按设备限制默认档（手机 720P、≤4 核 540P），该行为已在 **v0.14.18 取消**，默认始终最高档。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.18`，状态 healthy）。
 - **v0.14.16**：文档版。整份重写 README：章节重组、配置拆成「基础 / 播放与清晰度 / 服务端转码 / JS 源沙箱 / 通道监控与告警」六组，修正内置源清单位置与 HEVC / VVC 转码说明，版本说明恢复时间倒序并对齐 GHCR + Docker Hub 双仓库发布。功能与 v0.14.15 完全一致。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.16`，状态 healthy）。
 
 - **v0.14.15**：修复「一集没播完就自动跳下一集、并且画质被降」。服务端转码出的 HLS 是**边转边追加分片**的 EVENT 清单，`video.duration` 会一路变长；播放器此前用「当前时间接近 duration」判断片尾，于是转码刚产出 3–4 秒时就误判播完，直接切下一集（连播开着时表现为疯狂跳集），切集又会打断刚建立的转码而回落到低档。现在改为：清单里出现 `EXT-X-ENDLIST`（`details.live === false`）之后才允许片尾判定，转码期间 `ended` 事件只续播不切集。另外把「转码槽位排满」从立即 503 改为**先排队最多 8 秒**（`TRANSCODE_QUEUE_WAIT_MS`），并让前端遇到 503/429 时**原档重试**而不是降清晰度，避免一次排队把整部剧永久压到 540P。 发版前实测：红果 1080P 连续播放 130 秒始终停在第 1 集、画质保持 1080P、无 JS 错误。
