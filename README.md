@@ -544,7 +544,9 @@ hongguo-web/
 - **同时播放上限**：内置红果解密流默认 6 路并发（MAX_STREAMS 可调）；同一集同一档位多人同时点开只取址一次。
 - **红果档位与编码**：360P 是 H.264；1080P 是 HEVC、360P–720P 中间档是 H.266/VVC，浏览器都没有解码器，只有服务端装了 ffmpeg 7.1+ 才转成 H.264 HLS（1080P 转码可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭，关闭后 1080P 只给 HEVC 直连，设备不支持则回落低档）。转码约 12× 实时（单核），并发多了会排队；排队等不到会返回 503 并让前端原档重试。
 - **红果加密格式**：只支持 CENC（AES-128-CTR）、每样本 8 字节 IV、无 subsample、moov 前置的非分片 MP4；上游若改格式会返回 CENC_UNSUPPORTED，而不是花屏。
-- **官方取址会被限流**：按匿名设备身份 + 出口 IP 双重限流，空正文 / 403 / 429 会进入冷却并回落 360P；这是有意为之，避免把 IP 打进惩罚窗。
+- **官方取址（旧 HTTP 签名链）会被限流**：2026-11 起纯 HTTP 签名对匿名设备返回 200 空正文；本服务优先走官方 SDK v5 通道（需要 Python3 + unicorn + pycryptodome，官方镜像已内置），SDK 失败才回旧链，旧链的空正文 / 403 / 429 会进入冷却并回落 360P。
+- **SDK 首次取址较慢**：第一次播放要下载约 5.4MB 官方 SDK 素材到 `DATA_DIR/sdk-cache`，约多花 3–5 秒；之后每集取址 1.5–3 秒。缓存被删除后会重新下载。
+- **Windows Docker Desktop 取址限制**：部分 Windows Docker Desktop（WSL2 NAT）环境无法完成到 `log.snssdk.com` 的 TLS 握手，首次 SDK 设备注册会失败，表现为只能 360P；Linux/NAS 原生 Docker 无此问题。可把一份可用实例的 `sdk-cache/device.json`（以及同目录的 `libmetasec_ml.so`、`sdk-app-config.encoded`）复制到 `DATA_DIR/sdk-cache` 后重启；本项目本机 8787 即用此法恢复 1080P。
 - **替代源依赖同名剧**：按标题相似度跨源匹配；红果独播剧、译名差异大的剧通常找不到候选。
 - **账号数据库**：DATA_DIR/hongguo.db；必须挂到本地目录，备份直接拷这个文件（建议先停容器）。
 - **PWA**：Service Worker 只在 https:// 或 http://localhost 启用；局域网纯 HTTP 可用但没有离线缓存、不能安装。
@@ -557,7 +559,7 @@ hongguo-web/
 ## 版本说明
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
-- **v0.14.21**：修复官方高清取流。上游把 App 取址接口（video_tab / multi_video_model）对匿名设备一律返回 HTTP 200 空正文，导致官方通道熔断、整站回落到 360P 兼容通道。本版新增**官方 SDK v5 取址通道**：匿名设备注册 → 下载并校验官方 SDK 素材（首次约 5.4MB，缓存到 `DATA_DIR/sdk-cache`）→ 本地模拟 SDK 计算签名 → 换取 token → 调播放接口拿 1080P/720P 的 HEVC 流与内容密钥，再由现有解密/转码链路输出。实测 1080P/720P/540P/480P/360P 全部恢复；首次播放需下载素材，起播约 6–8 秒，之后每集起播约 3–4 秒。可用 `HONGGUO_SDK_PLAYBACK=0` 关闭。
+- **v0.14.21**：修复官方高清取流。上游把 App 取址接口（video_tab / multi_video_model）对匿名设备一律返回 HTTP 200 空正文，导致官方通道熔断、整站回落到 360P 兼容通道。本版新增**官方 SDK v5 取址通道**：匿名设备注册 → 下载并校验官方 SDK 素材（首次约 5.4MB，缓存到 `DATA_DIR/sdk-cache`）→ 本地模拟 SDK 计算签名 → 换取 token → 调播放接口拿 1080P/720P 的 HEVC 流与内容密钥，再由现有解密/转码链路输出。实测 1080P/720P/540P/480P/360P 全部恢复；首次播放需下载素材，起播约 6–8 秒，之后每集起播约 3–4 秒。可用 `HONGGUO_SDK_PLAYBACK=0` 关闭。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.21`，桌面与移动端播放回归 28/28 通过）。
 - **v0.14.20**：数据目录改为本地 bind 挂载。默认 compose 的 `volumes` 从命名卷 `hongguo-data:/app/data` 改为 `./hongguo-data:/app/data`，账号库/历史/收藏/导入的源直接落在宿主机当前目录，方便查看与备份（README 升级章节已附旧卷迁移命令）；`compose.host.yaml` 同步改为 `./hongguo-data:/app/data`。 本机 8787 容器已升级到该版本（数据已从旧命名卷 `app_hongguo-data` 迁移到 `app/hongguo-data`，`/health` 报 `0.14.20`，状态 healthy）。
 - **v0.14.19**：部署方式增强。① 端口改为环境变量驱动：`PORT=9000 docker compose up -d` 即可换端口（bridge 模式下 ports 两侧同步跟随 `PORT`），无需改文件。② 新增 [compose.host.yaml](compose.host.yaml)：`network_mode: host`，不写 ports，监听端口只由 `PORT` 决定，适合 NAS / Linux 主机直连宿主机网络；健康检查同样按 `PORT` 探测。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.19`，状态 healthy）。
 - **v0.14.18**：清晰度默认值修正。取消 v0.14.17 的「默认档位自适应」——不再按手机/核数/网络把默认清晰度降到 720P/540P，默认始终是「自动（最高，1080P）」，仅在最高档本机无法解码时才退到本机可播的最高档；自动降档只在解码失败时发生。v0.14.17 的边下边转（P0-1）与空闲自动取消（P0-2）保持不变。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.18`，状态 healthy）。
