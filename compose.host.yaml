@@ -1,0 +1,78 @@
+# 红果短剧网页版 —— Docker Compose（host 网络模式）
+#
+# 适合 NAS / Linux 主机：容器直接使用宿主机网络，不需要 ports 端口映射，
+# 监听哪个端口完全由环境变量 PORT 决定（默认 8787）：
+#
+#   PORT=9000 docker compose -f compose.host.yaml up -d
+#   浏览器打开 http://<宿主机IP>:9000
+#
+# 注意：
+#   - host 模式下 ports 会被忽略，所以本文件没有 ports 段；端口只由 PORT 环境变量决定。
+#   - HOST 保持 0.0.0.0，才能被局域网/公网访问（只给本机用可设 127.0.0.1）。
+#   - 同一个 8787 端口只能有一个进程占用：host 模式和默认的 bridge 模式不要同时启动。
+#   - Docker Desktop（Windows/macOS）的 host 网络能力受版本与平台限制，建议在这类系统上用默认 compose.yaml。
+
+services:
+  hongguo-web:
+    image: ghcr.io/kid941005/hongguo-web:latest
+    # build: .
+    container_name: hongguo-web
+    network_mode: host
+
+    environment:
+      # ---------- 基础 ----------
+      PORT: "${PORT:-8787}"               # 宿主机（=容器）监听端口
+      HOST: "0.0.0.0"                      # 监听地址；只想本机访问可改 127.0.0.1
+      DATA_DIR: "/app/data"                # 配置 + 导入的 JS 源 + 缓存（必须可写，已挂卷）
+      SOURCES_DIR: "/app/sources/builtin"  # 内置源目录（镜像自带，只读即可）
+      TZ: "Asia/Shanghai"                  # 时区，日志时间用
+
+      # ---------- 访问控制 ----------
+      TOKEN: ""
+      # TRUST_PROXY: "1"
+
+      # ---------- 播放 / 安全 ----------
+      MAX_STREAMS: "6"
+      ALLOW_PRIVATE_MEDIA: "0"
+      ALLOW_PRIVATE_FETCH: "0"
+
+      # ---------- 播放通道监控 ----------
+      PLAYBACK_MONITOR: "1"
+      PLAYBACK_MONITOR_INTERVAL_MINUTES: "10"
+      PLAYBACK_ALERT_THRESHOLD: "3"
+      ALERT_WEBHOOK_URL: ""
+
+      # ---------- 源自动更新 ----------
+      SOURCE_AUTO_UPDATE: "1"
+      SOURCE_UPDATE_INTERVAL_HOURS: "6"
+      SOURCE_UPDATE_START_DELAY_SECONDS: "15"
+
+    volumes:
+      - hongguo-data:/app/data
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||8787)+'/health').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # ---------- 安全加固（容器内只允许写挂载卷与 /tmp） ----------
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  hongguo-data:

@@ -9,6 +9,6 @@ server/.dsh-project-memory
 .git
 .gitignore
 Dockerfile
-compose.yaml
+compose*.yaml
 README.md
 docs
