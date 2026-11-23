@@ -100,7 +100,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.15","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
+{"service":"hongguo-web","ok":true,"version":"0.14.16","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
 ```
 
 也可以跑仓库自带的冒烟脚本（检查健康、源列表、首页、猜你喜欢、通道探针等）：
@@ -169,7 +169,7 @@ docker run -d --name hongguo-web \
   hongguo-web
 ```
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.15`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.15`）。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.16`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.16`）。
 
 ### 镜像与标签
 
@@ -203,7 +203,7 @@ docker run -d --name hongguo-web \
 | 低配机器省 CPU | environment.HONGGUO_HEVC_TRANSCODE: `"0"`（关掉 1080P 转码，只给原始 HEVC 直连） |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.15`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.15` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.16`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.16` |
 
 ### 基础
 
@@ -519,6 +519,7 @@ hongguo-web/
 ## 版本说明
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
+- **v0.14.16**：文档版。整份重写 README：章节重组、配置拆成「基础 / 播放与清晰度 / 服务端转码 / JS 源沙箱 / 通道监控与告警」六组，修正内置源清单位置与 HEVC / VVC 转码说明，版本说明恢复时间倒序并对齐 GHCR + Docker Hub 双仓库发布。功能与 v0.14.15 完全一致。
 
 - **v0.14.15**：修复「一集没播完就自动跳下一集、并且画质被降」。服务端转码出的 HLS 是**边转边追加分片**的 EVENT 清单，`video.duration` 会一路变长；播放器此前用「当前时间接近 duration」判断片尾，于是转码刚产出 3–4 秒时就误判播完，直接切下一集（连播开着时表现为疯狂跳集），切集又会打断刚建立的转码而回落到低档。现在改为：清单里出现 `EXT-X-ENDLIST`（`details.live === false`）之后才允许片尾判定，转码期间 `ended` 事件只续播不切集。另外把「转码槽位排满」从立即 503 改为**先排队最多 8 秒**（`TRANSCODE_QUEUE_WAIT_MS`），并让前端遇到 503/429 时**原档重试**而不是降清晰度，避免一次排队把整部剧永久压到 540P。 发版前实测：红果 1080P 连续播放 130 秒始终停在第 1 集、画质保持 1080P、无 JS 错误。
 - **v0.14.14**：修复红果官方高清通道（2026-11-20 起 v5 POST 与旧签名 GET 都只回 200 空正文，导致长期只能 360P 兼容）。改用同族 `video_tab` **无正文 GET** 签名请求（`/reading/bookapi/video_tab/multi_video_model/v1/`，按空 body 计算 stub，不再发 req-ticket），恢复 1080P/720P/540P/480P/360P 全档取址；1080P 为 HEVC，普通浏览器解不了，故新增服务端转码（HEVC → H.264 HLS 分片，可拖动，限 2500kbps），默认开启，可用 `HONGGUO_HEVC_TRANSCODE=0` 关闭。 发版后官方通道探测恢复 `status: ok / channel: official`。
