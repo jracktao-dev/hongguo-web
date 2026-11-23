@@ -39,6 +39,11 @@ services:
       ALLOW_PRIVATE_MEDIA: "0"             # 1=允许 /api/media、/api/hls 代理内网地址（默认 0 拒绝，防 SSRF）
       ALLOW_PRIVATE_FETCH: "0"             # 1=允许 JS 源 fetch 与按 URL 导入源访问内网地址（默认 0 拒绝，防 SSRF）
 
+      # ---------- 官方高清（SDK v5 取址，1080P/720P）----------
+      HONGGUO_SDK_PLAYBACK: "1"              # 1=启用官方 SDK v5 取址（1080P/720P 全档）；0=只用旧的纯 HTTP 签名链（会退化到 360P）
+      HONGGUO_SDK_TIMEOUT_MS: "45000"        # 单集 SDK 取址超时（毫秒）；首次需下载约 5.4MB 官方 SDK 素材到 DATA_DIR/sdk-cache
+      # HONGGUO_SDK_CONCURRENCY: "2"         # 同时运行多少个 Python 取址子进程（默认 2，Unicorn 模拟吃 CPU）
+
       # ---------- 播放通道监控 ----------
       PLAYBACK_MONITOR: "1"                     # 1=定时探针检测内置红果播放通道（0=关闭，前端不显示通道横幅）
       PLAYBACK_MONITOR_INTERVAL_MINUTES: "10"   # 探针间隔（分钟，最小 1）

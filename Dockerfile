@@ -5,14 +5,22 @@ FROM node:22-trixie-slim
 
 # ffmpeg 只用于「VVC 档位服务端转码成 H.264」这一条链路，浏览器自己解不了 VVC。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg \
+ && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip \
  && rm -rf /var/lib/apt/lists/*
+# 官方 SDK v5 取址（1080P/720P）用 Python + Unicorn 模拟 ARM64 摘要核；requests 负责注册/换 token。
+# Unicorn/pycryptodome 都有官方 manylinux 轮子（amd64/arm64），构建阶段装好即可，运行期只读。
+RUN python3 -m pip install --no-cache-dir --break-system-packages --disable-pip-version-check \
+      unicorn==2.1.4 pycryptodome requests \
+    && python3 -c "import unicorn, Crypto, requests; print('sdk-python-deps-ok')"
 
 ENV NODE_ENV=production \
     PORT=8787 \
     HOST=0.0.0.0 \
     DATA_DIR=/app/data \
-    FFMPEG_PATH=/usr/bin/ffmpeg
+    FFMPEG_PATH=/usr/bin/ffmpeg \
+    HONGGUO_PYTHON=/usr/bin/python3 \
+    SDK_CACHE_DIR=/app/data/sdk-cache \
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 

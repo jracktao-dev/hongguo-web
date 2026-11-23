@@ -199,7 +199,7 @@ docker run -d --name hongguo-web \
 
 不用 compose 时换端口：把 `-p 8787:8787` 和 `-e PORT=8787` 一起改成同一个端口即可。
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.20`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.20`）。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.21`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.21`）。
 
 ### 镜像与标签
 
@@ -232,9 +232,10 @@ docker run -d --name hongguo-web \
 | 加访问口令 | environment.TOKEN 填口令。浏览器会直接弹出「需要访问口令」输入框（也可 `http://<host>:8787/?at=<口令>` 打开），填一次记住，之后自动给接口和媒体地址带上 `at=` |
 | 放大并发播放 | environment.MAX_STREAMS: `"12"` |
 | 低配机器省 CPU | environment.HONGGUO_HEVC_TRANSCODE: `"0"`（关掉 1080P 转码，只给原始 HEVC 直连） |
+| 关闭官方 SDK 取址 | environment.HONGGUO_SDK_PLAYBACK: `"0"`（不启用 Python SDK 通道，仅走旧接口与 360P 兼容通道） |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.20`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.20` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.21`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.21` |
 
 ### 基础
 
@@ -259,6 +260,11 @@ docker run -d --name hongguo-web \
 | HONGGUO_OFFICIAL_UNSIGNED | 空 | 1 时改用旧的「无签名 + 注册身份」取址请求；仅在上游确已关闭签名校验时使用 |
 | HONGGUO_HEVC_TRANSCODE | 1 | 设为 `0` 关闭 1080P（HEVC）的服务端转码：关闭后 1080P 只给原始 HEVC 直连流，设备不支持 HEVC 时会自动回落到 720P 等转码档；低配 NAS 担心 CPU 占用可关 |
 | HONGGUO_MODEL_CACHE_MAX | 512 | 官方播放模型缓存条目上限（最小 16） |
+| HONGGUO_SDK_PLAYBACK | 1 | 官方 SDK v5 取址通道开关；设为 `0` 关闭（关闭后若上游 App 接口仍空正文，会自动回落 360P 兼容通道） |
+| HONGGUO_SDK_TIMEOUT_MS | 45000 | 单次 SDK 取址超时（毫秒） |
+| HONGGUO_SDK_CONCURRENCY | 2 | SDK 取址并发上限（每路一个 Python 子进程） |
+| HONGGUO_PYTHON | python3 | SDK 子进程使用的 Python 解释器；官方镜像为 `/usr/bin/python3` |
+| SDK_CACHE_DIR | `DATA_DIR/sdk-cache` | SDK 素材与匿名设备身份缓存目录；首次播放会在此下载约 5.4MB 素材 |
 
 ### 服务端转码
 
@@ -551,6 +557,7 @@ hongguo-web/
 ## 版本说明
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
+- **v0.14.21**：修复官方高清取流。上游把 App 取址接口（video_tab / multi_video_model）对匿名设备一律返回 HTTP 200 空正文，导致官方通道熔断、整站回落到 360P 兼容通道。本版新增**官方 SDK v5 取址通道**：匿名设备注册 → 下载并校验官方 SDK 素材（首次约 5.4MB，缓存到 `DATA_DIR/sdk-cache`）→ 本地模拟 SDK 计算签名 → 换取 token → 调播放接口拿 1080P/720P 的 HEVC 流与内容密钥，再由现有解密/转码链路输出。实测 1080P/720P/540P/480P/360P 全部恢复；首次播放需下载素材，起播约 6–8 秒，之后每集起播约 3–4 秒。可用 `HONGGUO_SDK_PLAYBACK=0` 关闭。
 - **v0.14.20**：数据目录改为本地 bind 挂载。默认 compose 的 `volumes` 从命名卷 `hongguo-data:/app/data` 改为 `./hongguo-data:/app/data`，账号库/历史/收藏/导入的源直接落在宿主机当前目录，方便查看与备份（README 升级章节已附旧卷迁移命令）；`compose.host.yaml` 同步改为 `./hongguo-data:/app/data`。 本机 8787 容器已升级到该版本（数据已从旧命名卷 `app_hongguo-data` 迁移到 `app/hongguo-data`，`/health` 报 `0.14.20`，状态 healthy）。
 - **v0.14.19**：部署方式增强。① 端口改为环境变量驱动：`PORT=9000 docker compose up -d` 即可换端口（bridge 模式下 ports 两侧同步跟随 `PORT`），无需改文件。② 新增 [compose.host.yaml](compose.host.yaml)：`network_mode: host`，不写 ports，监听端口只由 `PORT` 决定，适合 NAS / Linux 主机直连宿主机网络；健康检查同样按 `PORT` 探测。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.19`，状态 healthy）。
 - **v0.14.18**：清晰度默认值修正。取消 v0.14.17 的「默认档位自适应」——不再按手机/核数/网络把默认清晰度降到 720P/540P，默认始终是「自动（最高，1080P）」，仅在最高档本机无法解码时才退到本机可播的最高档；自动降档只在解码失败时发生。v0.14.17 的边下边转（P0-1）与空闲自动取消（P0-2）保持不变。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.18`，状态 healthy）。

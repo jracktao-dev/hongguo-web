@@ -6,6 +6,7 @@ import argus from "./sign/argus.cjs";
 import v5 from "./sign/v5.cjs";
 import { fileURLToPath } from "node:url";
 import { createDeviceStore } from "./device.mjs";
+import { createSdkPlayback } from "./sdk-playback.mjs";
 
 // 红果（番茄小说 App，aid=8662）官方播放取址。
 //
@@ -217,6 +218,9 @@ export function createOfficial({ register, deriveContentKey, devices } = {}) {
     throw new Error("createOfficial 需要 register / deriveContentKey");
 
   const cache = new Map(); // epId -> { time, value } | { time, error }
+  // 2026-11-23 起上游把播放授权升级为 SDK 门控：纯 HTTP 签名一律 200 空正文。
+  // 优先用官方 SDK v5 取 model（可拿到 1080P/720P 全档 + CENC 密钥），失败再走旧的签名链。
+  const sdkPlayback = String(process.env.HONGGUO_SDK_PLAYBACK || "1") === "0" ? null : createSdkPlayback();
   const CACHE_MAX = Math.max(16, Number(process.env.HONGGUO_MODEL_CACHE_MAX || 512) || 512);
   // 写入统一走这里：刷新插入顺序 + 超上限时淘汰最旧，避免长期运行内存单调增长。
   function remember(key, entry) {
@@ -606,9 +610,25 @@ export function createOfficial({ register, deriveContentKey, devices } = {}) {
   // 并发合并：/api/play 和 /api/stream 常同时要同一集的 model，合并成一次上游请求，
   // 也避免「play 侧超时放弃、stream 侧又看到失败缓存」直接掉到 360P。
   async function runFetch(key, options = {}) {
-    if (Date.now() < quietUntil) throw new Error("官方通道冷却中（上次空响应，稍后自动恢复）");
     const unsigned = String(process.env.HONGGUO_OFFICIAL_UNSIGNED || "") === "1";
     let lastError = null;
+    // 1) 首选 SDK v5 通道：能拿 1080P/720P 全档与 CENC 密钥。失败（含未安装 Python）时继续走旧链。
+    // 注意：旧链的「空正文冷却」不影响 SDK 通道——冷却只说明纯 HTTP 签名已失效，SDK 仍可能成功。
+    if (sdkPlayback && sdkPlayback.available) {
+      try {
+        const model = await sdkPlayback.resolve(key);
+        quietUntil = 0;
+        remember(key, { time: Date.now(), value: model });
+        stats.ok += 1;
+        return model;
+      } catch (error) {
+        lastError = error;
+        stats.sdkFailed = (stats.sdkFailed || 0) + 1;
+        stats.lastSdkError = String((error && error.message) || error).slice(0, 300);
+        stats.lastSdkErrorAt = Date.now();
+      }
+    }
+    if (Date.now() < quietUntil) throw new Error("官方通道冷却中（上次空正文，稍后自动恢复）");
     // 可重试判据：空正文 / 业务错误码 / 缺条目。网络错误、403/429 直接放弃，别白打上游。
     const retriable = /空响应|错误码|缺少条目|没有 video_model|video_list/;
     if (unsigned) {
