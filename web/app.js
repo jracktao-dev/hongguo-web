@@ -1645,21 +1645,44 @@
     }
     return { dead: false, badge: '', title: '' };
   }
-  // 默认起播档位：高清优先。能在本机播放的档位里取分辨率最高的那档（服务端转码档也算），
-  // 360P 兼容永远只做最后兜底——以前「直连档优先」会让无 HEVC 的浏览器跳过 720P 转码档直接播 360P。
+  // P0-3 默认档位自适应：按设备能力限制默认起播的最高分辨率，避免手机/弱机一上来就请求最重的 1080P 转码。
+  // 返回 0 表示不限制；否则为默认允许的最高高度（px）。用户手动选过的档位不受此限制。
+  function preferredMaxHeight() {
+    try {
+      var ua = navigator.userAgent || '';
+      var mobile = false;
+      try { mobile = !!(window.matchMedia && window.matchMedia('(max-width: 680px)').matches); } catch (e) {}
+      if (!mobile) mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      var slowNet = !!(conn && (conn.saveData || /(^|-)2g$|(^|-)3g$/.test(String(conn.effectiveType || ''))));
+      var cores = Number(navigator.hardwareConcurrency) || 4;
+      if (mobile) return slowNet ? 480 : 720;
+      if (cores <= 4) return slowNet ? 480 : 540;
+      if (slowNet) return 540;
+      return 0;
+    } catch (e) { return 0; }
+  }
+  // 默认起播档位：高清优先，但受 preferredMaxHeight() 限制（手机默认 720P、弱机 540P）。
+  // 能在本机播放的档位里取「不超过上限」的最高那档；360P 兼容永远只做最后兜底。
   function defaultPlayableOption() {
     var opts = (state.qualityOptions || []).filter(function (o) { return o.url && !qualityGate(o).dead; });
     if (!opts.length) return null;
-    // 「自动」等于最高档：本机能解就直接用它。
+    var cap = preferredMaxHeight();
     var auto = opts.filter(function (o) { return o.key === 'auto'; })[0];
-    if (auto) return auto;
-    // 其余按分辨率从高到低；同分辨率优先不转码（省 CPU、可拖动），360P 兼容排在最后。
-    var ranked = opts.filter(function (o) { return o.key !== 'compat'; }).sort(function (a, b) {
+    if (auto && (!cap || (auto.height || 0) <= cap)) return auto;
+    var cmp = function (a, b) {
       var ha = a.height || 0, hb = b.height || 0;
       if (hb !== ha) return hb - ha;
       if (!!a.transcode !== !!b.transcode) return a.transcode ? 1 : -1;
       return 0;
-    });
+    };
+    // 限高：在可播档里挑不超过上限的最高档；同分辨率优先不转码（省 CPU、可拖动）。
+    var capped = opts.filter(function (o) {
+      return o.key !== 'auto' && o.key !== 'compat' && (!cap || (o.height || 0) <= cap);
+    }).sort(cmp);
+    if (capped.length) return capped[0];
+    if (auto) return auto;
+    var ranked = opts.filter(function (o) { return o.key !== 'compat'; }).sort(cmp);
     if (ranked.length) return ranked[0];
     return opts.filter(function (o) { return o.key === 'compat'; })[0] || opts[0];
   }
@@ -1737,9 +1760,8 @@
       if (!hasRealTiers()) return;
       // 只在「低清兜底档」或「起播时还没有真实档位的自动档」上升级，避免在已能播的高档之间来回切。
       if (state.qualityKey && state.qualityKey !== 'compat' && (state.qualityKey !== 'auto' || hadTiers)) return;
-      // 目标档：自动档可播就用自动（服务端按本机能力给最高档），否则用本机可播的最高档。
-      var autoOpt = optionByKey('auto');
-      var best = (autoOpt && !qualityGate(autoOpt).dead) ? autoOpt : defaultPlayableOption();
+      // 目标档：用「设备自适应默认档」，避免手机后台补档时一上来就升到 1080P。
+      var best = defaultPlayableOption();
       if (!best || !best.url || best.key === 'compat') return;
       if (state.failedKeys[best.key]) return;
       // 只在当前是具体档位时才比较高度；auto/compat 兜底态的高度没有参考意义（新档位表已覆盖旧值）。
@@ -2280,12 +2302,9 @@
       }
     }
     if (state.playKind === 'native' && !state.qualityKey) {
-      var autoOpt0 = optionByKey('auto');
-      if (autoOpt0 && !qualityGate(autoOpt0).dead) state.qualityKey = 'auto';
-      else {
-        var p0 = defaultPlayableOption();
-        if (p0) { state.qualityKey = p0.key; if (p0.url) url = p0.url; state.hevcFallback = p0.key === 'compat'; }
-      }
+      // P0-3：默认档同样走设备自适应（手机 720P / 弱机 540P），不无条件选「自动（1080P）」。
+      var p0 = defaultPlayableOption();
+      if (p0) { state.qualityKey = p0.key; if (p0.url) url = p0.url; state.hevcFallback = p0.key === 'compat'; }
     }
     state.playToken = (state.playToken || 0) + 1;
     syncQualityParam(state.playKind === 'native' ? state.qualityKey : '');

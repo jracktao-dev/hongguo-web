@@ -10,13 +10,15 @@ import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.mjs";
 import { QUALITIES } from "./stream.mjs";
-import { transcodeAvailable, stageVvcInput, stageHevcInput, hevcTranscodeEnabled, dropStage, h264Args } from "./transcode.mjs";
+import { transcodeAvailable, stageVvcInput, stageHevcInput, stageHevcStream, pumpHevcStream, hevcTranscodeEnabled, dropStage, h264Args } from "./transcode.mjs";
 
 const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
 const MAX_CONCURRENT = Math.max(1, Number(process.env.TRANSCODE_MAX_CONCURRENT || 2) || 2);
 // 槽位满时先排队等一会儿（默认 8s），而不是立刻 503——同一个人连看/多端同看时
 // 1080P 才不会因为「刚好有 2 个转码在跑」被前端降成 540P。
 const QUEUE_WAIT_MS = Math.max(0, Number(process.env.TRANSCODE_QUEUE_WAIT_MS == null ? 8000 : process.env.TRANSCODE_QUEUE_WAIT_MS) || 0);
+// P0-2：转码任务若长时间无人取清单/分片（关页面、切走），就主动终止，别让 ffmpeg 白白占槽位与内存。
+const IDLE_MS = Math.max(20 * 1000, Number(process.env.HLS_TC_IDLE_MS || 60 * 1000) || 60 * 1000);
 // 转码结果留 30 分钟：够同一集被反复起播/拖动，也不会把临时目录撑爆（容器里 /tmp 是 tmpfs）。
 const TTL_MS = Math.max(60 * 1000, Number(process.env.HLS_TC_TTL_MS || 30 * 60 * 1000) || 30 * 60 * 1000);
 // 单个转码任务的硬超时：ffmpeg 卡死时若不主动 kill，running 计数永不归零，最终把并发槽位占满导致转码永久不可用。
@@ -26,10 +28,10 @@ const SEGMENT_RE = /^seg_\d{5}\.m4s$/;
 const INIT_NAME = "init.mp4";
 const jobs = new Map();
 let running = 0;
-const STATS = { started: 0, done: 0, failed: 0, lastError: "", lastAt: 0 };
+const STATS = { started: 0, done: 0, failed: 0, cancelled: 0, lastError: "", lastAt: 0 };
 
 export function hlsTranscodeStats() {
-  return { available: transcodeAvailable(), active: running, jobs: jobs.size, limit: MAX_CONCURRENT, queueWaitMs: QUEUE_WAIT_MS, ttlMs: TTL_MS, jobTimeoutMs: JOB_TIMEOUT_MS, ...STATS };
+  return { available: transcodeAvailable(), active: running, jobs: jobs.size, limit: MAX_CONCURRENT, queueWaitMs: QUEUE_WAIT_MS, ttlMs: TTL_MS, jobTimeoutMs: JOB_TIMEOUT_MS, idleMs: IDLE_MS, ...STATS };
 }
 
 function jobKey(epId, quality) {
@@ -48,6 +50,7 @@ async function createJob({ provider, epId, quality, logger }) {
       fs.rmSync(existing.dir, { recursive: true, force: true });
     } else {
       existing.touched = Date.now();
+      existing.lastAccess = Date.now();
       return existing;
     }
   }
@@ -56,7 +59,7 @@ async function createJob({ provider, epId, quality, logger }) {
     while (running >= MAX_CONCURRENT) {
       // 排队期间别的请求可能已经把同一个任务建好了，直接复用，别重复转。
       const again = jobs.get(key);
-      if (again && again.state !== "failed") { again.touched = Date.now(); return again; }
+      if (again && again.state !== "failed") { again.touched = Date.now(); again.lastAccess = Date.now(); return again; }
       if (Date.now() >= deadline) {
         const err = fail("BUSY", "同时转码数已达上限（" + MAX_CONCURRENT + "），请稍后重试");
         err.retryAfter = 3;
@@ -77,7 +80,10 @@ async function createJob({ provider, epId, quality, logger }) {
     state: "preparing",
     error: "",
     touched: Date.now(),
+    lastAccess: Date.now(),
     startedAt: Date.now(),
+    child: null,
+    cancelled: false,
   };
   jobs.set(key, job);
   running += 1;
@@ -100,7 +106,9 @@ async function runJob(job, { provider, logger }) {
     if (codec === "vvc") {
       staged = await stageVvcInput(stream);
     } else if (codec === "hevc" && hevcTranscodeEnabled()) {
-      staged = await stageHevcInput(stream);
+      // P0-1：先试「边下边转」（只读到 moov 就开转），失败再回落到整集下载。
+      staged = await stageHevcStream(stream);
+      if (!staged) staged = await stageHevcInput(stream);
     } else {
       throw fail(
         "UPSTREAM_COOLDOWN",
@@ -141,6 +149,7 @@ async function runJob(job, { provider, logger }) {
       if (settled) return;
       settled = true;
       clearWatchdog();
+      try { if (child && child.stdin && !child.stdin.destroyed) child.stdin.destroy(); } catch { /* 已关闭 */ }
       dropStage(staged.dir);
       if (ok) {
         job.state = "done";
@@ -148,6 +157,12 @@ async function runJob(job, { provider, logger }) {
         STATS.done += 1;
         STATS.lastAt = Date.now();
         if (logger) logger({ event: "hls_transcode_done", epId: job.epId, quality: job.quality });
+      } else if (job.cancelled) {
+        job.state = "failed";
+        job.error = String(message || "无人观看，已自动取消转码");
+        STATS.cancelled += 1;
+        STATS.lastAt = Date.now();
+        if (logger) logger({ event: "hls_transcode_cancelled", epId: job.epId, quality: job.quality });
       } else {
         job.state = "failed";
         job.error = String(message || "转码失败");
@@ -159,10 +174,19 @@ async function runJob(job, { provider, logger }) {
       resolve();
     };
     try {
-      child = spawn(FFMPEG, args, { cwd: job.dir, stdio: ["ignore", "ignore", "pipe"] });
+      const streaming = Boolean(staged && staged.kind === "hevc-stream");
+      child = spawn(FFMPEG, args, { cwd: job.dir, stdio: [streaming ? "pipe" : "ignore", "ignore", "pipe"] });
     } catch (error) {
       finish(false, "转码进程启动失败：" + String((error && error.message) || error));
       return;
+    }
+    job.child = child;
+    // P0-1：边下边转时，把已读 head + 剩余字节泵进 ffmpeg 的 stdin；失败就关管道让它收尾，
+    // 真正的失败原因由 exit 分支统一处理（避免这里再弹一个重复错误）。
+    if (staged && staged.kind === "hevc-stream") {
+      pumpHevcStream(child, staged).catch(() => {
+        try { if (child.stdin && !child.stdin.destroyed) child.stdin.destroy(); } catch { /* 已关闭 */ }
+      });
     }
     child.stderr.on("data", (chunk) => {
       stderr = (stderr + chunk.toString()).slice(-2000);
@@ -179,6 +203,7 @@ async function runJob(job, { provider, logger }) {
     });
     child.on("exit", (code) => {
       if (timedOut) return finish(false, job.error);
+      if (job.cancelled) return finish(false, job.error || "无人观看，已自动取消转码");
       if (code === 0) return finish(true);
       finish(false, (stderr || "ffmpeg 退出码 " + code).slice(-400));
     });
@@ -221,6 +246,7 @@ export async function serveTranscodePlaylist({ provider, epId, quality, req, res
   checkParams(req, quality);
   if (!/^\d{1,30}$/.test(String(epId))) throw fail("BAD_INPUT", "剧集 id 无效");
   const job = await createJob({ provider, epId, quality, logger });
+  job.lastAccess = Date.now();
   const ok = await waitForPlaylist(job, job.state === "done" ? 2000 : 25000);
   if (!ok) {
     if (job.state === "failed") throw fail("UPSTREAM_ERROR", "转码失败：" + (job.error || "未知错误"));
@@ -263,6 +289,7 @@ export async function serveTranscodeFile({ epId, quality, file, req, res, logger
   if (!job) throw fail("NOT_FOUND", "转码任务不存在（清单需先请求）");
   const target = path.join(job.dir, name);
   job.touched = Date.now();
+  job.lastAccess = Date.now();
   if (!fs.existsSync(target)) {
     // 播放器常常比转码快一步：短暂等一会儿（最多 10 秒），还不行就让它重试。
     const waited = await waitForFile(target, job, 10000);
@@ -335,10 +362,17 @@ function parseRange(header, size) {
 const sweeper = setInterval(() => {
   const now = Date.now();
   for (const [key, job] of jobs) {
-    if (job.state === "preparing" || job.state === "running") continue;
+    // P0-2：正在转但长时间没人取清单/分片（关页面、切走）→ 主动终止，释放槽位与内存。
+    if (job.state === "preparing" || job.state === "running") {
+      if (now - (job.lastAccess || job.touched) < IDLE_MS) continue;
+      job.cancelled = true;
+      job.error = "无人观看，已自动取消转码";
+      try { if (job.child) job.child.kill("SIGKILL"); } catch { /* 进程可能已退出 */ }
+      continue; // 等 runJob 的 exit/finish 归零 running，再按 TTL 清理目录
+    }
     if (now - job.touched < TTL_MS) continue;
     fs.rm(job.dir, { recursive: true, force: true }, () => {});
     jobs.delete(key);
   }
-}, 60 * 1000);
+}, 15 * 1000);
 if (sweeper.unref) sweeper.unref();

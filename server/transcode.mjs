@@ -205,6 +205,107 @@ export async function stageVvcInput(stream) {
   }
 }
 
+// P0-1：边下边转。红果的 HEVC MP4 是 faststart（moov 在 mdat 之前），先只读一小段
+// （够解析出 moov 即可）就启动 ffmpeg，用 stdin 把剩余字节顺序泵进去——不用等整集下载完。
+const HEAD_MAX = 8 * 1024 * 1024;
+
+export async function stageHevcStream(stream) {
+  const CH = 1024 * 1024;
+  const total = Number(stream.total) || 0;
+  if (!total) throw new Error("分片总长为 0");
+  if (total > MAX_INPUT) throw fail("SOURCE_OOM", "该集文件过大，超出转码上限（" + MAX_INPUT + " 字节）");
+  const parts = [];
+  let got = 0;
+  let buf = null;
+  let moov = null;
+  let moovDone = false;
+  let mdatStart = -1;
+  // 只按「盒头」扫描：mdat 通常比一个读块大得多，用 boxes() 会因为盒体不完整而丢掉它，
+  // 结果非要读完整集才认得出 mdat（等于退回「整集下载」）。这里允许最后一个盒被截断。
+  const scan = (b) => {
+    const list = [];
+    let off = 0;
+    while (off + 8 <= b.length) {
+      let size = b.readUInt32BE(off);
+      let hdr = 8;
+      if (size === 1) {
+        if (off + 16 > b.length) break;
+        size = Number(b.readBigUInt64BE(off + 8));
+        hdr = 16;
+      } else if (size === 0) {
+        size = b.length - off;
+      }
+      if (size < hdr) break;
+      list.push({
+        type: b.toString("latin1", off + 4, off + 8),
+        start: off,
+        size,
+        complete: off + size <= b.length,
+      });
+      if (off + size > b.length) break; // 截断：只保留这个盒头，别继续往后扫
+      off += size;
+    }
+    return list;
+  };
+  while (got < total && got < HEAD_MAX) {
+    const end = Math.min(got + CH - 1, total - 1);
+    const part = await stream.chunk(got, end);
+    parts.push(part);
+    got += part.length;
+    buf = Buffer.concat(parts);
+    const top = scan(buf);
+    moov = top.find((b) => b.type === "moov") || null;
+    moovDone = !!(moov && moov.complete);
+    const mdat = top.find((b) => b.type === "mdat");
+    mdatStart = mdat ? mdat.start : -1;
+    // moov 已完整、且 mdat 排在 moov 后面（faststart）→ 立刻开转，剩下的 mdat 边下边喂给 ffmpeg。
+    if (moovDone && mdatStart > moov.start) break;
+    if (mdat && mdat.start < (moov ? moov.start : Number.MAX_SAFE_INTEGER)) return null; // 非 faststart
+    if (got >= total) break;
+  }
+  if (!moovDone || mdatStart < 0 || mdatStart <= moov.start) {
+    return null; // 解析不了或非 faststart：让调用方回落到「整集下载」路径
+  }
+  const layout = analyse(buf);
+  if (!/^(hvc1|hev1)$/.test(layout.video.entry)) {
+    throw fail("CODEC_UNSUPPORTED", "该档位不是 HEVC，无需服务端转码");
+  }
+  return {
+    kind: "hevc-stream",
+    stream,
+    total,
+    head: buf.subarray(0, got),
+    headLen: got,
+    hasAudio: Boolean(layout.audio),
+  };
+}
+
+// 把已读的 head 和剩余字节顺序写进 ffmpeg 的 stdin；ffmpeg 提前退出（EPIPE）时安静收场。
+export async function pumpHevcStream(child, staged) {
+  const stdin = child && child.stdin;
+  if (!stdin) throw new Error("ffmpeg stdin 不可用");
+  stdin.on("error", () => { /* ffmpeg 提前关管道的 EPIPE 噪音，忽略 */ });
+  const CH = 1024 * 1024;
+  const write = (data) =>
+    new Promise((resolve, reject) => {
+      if (!data || !data.length) return resolve();
+      if (stdin.destroyed || stdin.writableEnded) return reject(new Error("ffmpeg stdin 已关闭"));
+      stdin.write(data, (err) => (err ? reject(err) : resolve()));
+    });
+  try {
+    if (staged.headLen) await write(staged.head);
+    for (let off = staged.headLen; off < staged.total; off += CH) {
+      const end = Math.min(off + CH - 1, staged.total - 1);
+      const part = await staged.stream.chunk(off, end);
+      await write(part);
+    }
+    if (!stdin.destroyed) stdin.end();
+  } catch (error) {
+    try { stdin.destroy(); } catch { /* 已关闭 */ }
+    throw error;
+  }
+}
+
 // HEVC(hvc1) 档位：MP4 容器本身是标准的（moov/stbl 正常，ffmpeg 直接能读），
 // 不需要像 VVC 那样手工剥 NAL，只要把整集落盘后交给 ffmpeg 重编码成 H.264。
 export async function stageHevcInput(stream) {
@@ -237,6 +338,14 @@ export function h264Args(staged) {
   if (staged && staged.kind === "hevc") {
     const args = ["-hide_banner", "-v", "error", "-nostdin", "-i", staged.mp4File, "-map", "0:v:0"];
     if (hasAudio) args.push("-map", "0:a:0");
+    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+      "-maxrate", "2500k", "-bufsize", "5000k", "-c:a", "copy");
+    return args;
+  }
+  // hevc-stream：输入来自 stdin 管道（stageHevcStream 已把 moov 读进 head），无需落地整集。
+  if (staged && staged.kind === "hevc-stream") {
+    const args = ["-hide_banner", "-v", "error", "-nostdin", "-i", "pipe:0", "-map", "0:v:0"];
+    if (staged.hasAudio) args.push("-map", "0:a:0");
     args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
       "-maxrate", "2500k", "-bufsize", "5000k", "-c:a", "copy");
     return args;
