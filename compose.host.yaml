@@ -48,7 +48,8 @@ services:
       SOURCE_UPDATE_START_DELAY_SECONDS: "15"
 
     volumes:
-      - hongguo-data:/app/data
+      # 数据直接放宿主机当前目录下的 ./hongguo-data（账号/历史/收藏/导入的源）
+      - ./hongguo-data:/app/data
 
     restart: unless-stopped
 
@@ -74,5 +75,3 @@ services:
     cap_drop:
       - ALL
 
-volumes:
-  hongguo-data:

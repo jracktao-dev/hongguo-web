@@ -42,7 +42,7 @@
 - **浏览器只跟本服务说话。** 签名取址、CENC 分块解密、Range 转发、HLS 清单重写、VVC / HEVC 转码都在容器里完成，前端拿到的是标准 HLS / MP4。
 - **一个站点看全部内容。** 首页、分类、搜索、推荐、猜你喜欢、详情、选集、播放、账号、历史、收藏、追更在同一套界面里，桌面与手机共用一套页面。
 - **数据源可扩展。** 内置红果之外，任何符合糖葫芦（THLRedGuo / CatPaw）规范的单文件 JS 源都能导入；支持多源并发聚合搜索与播放失败自动换源。
-- **自托管、可加固。** 个人数据存 SQLite，命名卷持久化；容器默认非 root、只读根文件系统、丢弃全部 capability。
+- **自托管、可加固。** 个人数据存 SQLite，落盘在宿主机 `./hongguo-data`；容器默认非 root、只读根文件系统、丢弃全部 capability。
 
 ## 功能
 
@@ -85,7 +85,7 @@ docker compose up -d
 首次启动会拉取镜像并创建两样东西：
 
 - 容器：`hongguo-web`
-- 命名卷：`hongguo-data`（账号、历史、收藏、导入的源都在这里）
+- 本地数据目录：`./hongguo-data`（相对 compose 文件所在目录；账号、历史、收藏、导入的源都在这里，直接可见/可备份）
 
 浏览器打开 <http://localhost:8787> 即可。要换端口不必改文件：`PORT=9000 docker compose up -d`，然后访问 <http://localhost:9000>。
 
@@ -100,7 +100,7 @@ curl -s http://localhost:8787/health
 正常返回：
 
 ```json
-{"service":"hongguo-web","ok":true,"version":"0.14.19","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
+{"service":"hongguo-web","ok":true,"version":"0.14.20","active":"hongguo","sources":7,"accounts":true,"tokenRequired":false}
 ```
 
 也可以跑仓库自带的冒烟脚本（检查健康、源列表、首页、猜你喜欢、通道探针等）：
@@ -112,9 +112,21 @@ BASE=http://127.0.0.1:8787 node server/scripts/smoke.mjs
 ### 升级与卸载
 
 ```bash
-docker compose pull && docker compose up -d   # 有新镜像时重建，数据保留
-docker compose down                           # 停止并删除容器，数据卷保留
-docker compose down -v                        # 连数据卷一起删（账号/历史/源全部丢失）
+docker compose pull && docker compose up -d   # 有新镜像时重建，./hongguo-data 保留
+docker compose down                           # 停止并删除容器，./hongguo-data 保留
+rm -rf ./hongguo-data                         # 彻底清空数据（账号/历史/源全部丢失）
+
+> 从旧版本升级（以前用命名卷 `hongguo-data`）时，数据不会自动搬过来，先迁移一次：
+>
+> ```bash
+> docker compose down
+> docker volume ls | grep hongguo-data          # 找到旧卷名，通常是 <目录名>_hongguo-data
+> docker run --rm --user root \
+>   -v <旧卷名>:/from -v "$PWD/hongguo-data:/to" \
+>   --entrypoint sh ghcr.io/kid941005/hongguo-web:latest \
+>   -c "cp -a /from/. /to/ && chown -R 1000:1000 /to"
+> docker compose up -d
+> ```
 ```
 
 ## 部署
@@ -140,10 +152,8 @@ services:
     environment:
       PORT: "${PORT:-8787}"             # 监听端口，默认 8787
       TOKEN: ""                      # 需要访问口令就填
-    volumes: ["hongguo-data:/app/data"]
+    volumes: ["./hongguo-data:/app/data"]
     restart: unless-stopped
-volumes:
-  hongguo-data:
 ```
 
 然后 `docker compose up -d`；换端口用 `PORT=9000 docker compose up -d`（上面的 `ports` 与 `PORT` 会一起跟着变）。
@@ -181,7 +191,7 @@ docker run -d --name hongguo-web \
   -e DATA_DIR=/app/data -e SOURCES_DIR=/app/sources/builtin \
   -e TZ=Asia/Shanghai -e TOKEN= \
   -e MAX_STREAMS=6 -e ALLOW_PRIVATE_MEDIA=0 -e ALLOW_PRIVATE_FETCH=0 \
-  -v hongguo-data:/app/data \
+  -v "$PWD/hongguo-data:/app/data" \
   --restart unless-stopped \
   --read-only --tmpfs /tmp --security-opt no-new-privileges --cap-drop ALL \
   hongguo-web
@@ -189,7 +199,7 @@ docker run -d --name hongguo-web \
 
 不用 compose 时换端口：把 `-p 8787:8787` 和 `-e PORT=8787` 一起改成同一个端口即可。
 
-想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.19`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.19`）。
+想固定版本就把镜像换成 `ghcr.io/kid941005/hongguo-web:0.14.20`（Docker Hub 上同名：`docker.io/kid941005/hongguo-web:0.14.20`）。
 
 ### 镜像与标签
 
@@ -218,12 +228,13 @@ docker run -d --name hongguo-web \
 | --- | --- |
 | 换端口（bridge 模式） | 不改文件：`PORT=9000 docker compose up -d`；或把 compose.yaml 里 ports 两侧一起写成目标端口（也支持 `PORT` 环境变量） |
 | 换端口（host 模式） | `PORT=9000 docker compose -f compose.host.yaml up -d`，无需 ports |
+| 改数据目录 | volumes 左边改成目标路径，如 `/volume1/docker/hongguo-data:/app/data`（默认 `./hongguo-data`） |
 | 加访问口令 | environment.TOKEN 填口令。浏览器会直接弹出「需要访问口令」输入框（也可 `http://<host>:8787/?at=<口令>` 打开），填一次记住，之后自动给接口和媒体地址带上 `at=` |
 | 放大并发播放 | environment.MAX_STREAMS: `"12"` |
 | 低配机器省 CPU | environment.HONGGUO_HEVC_TRANSCODE: `"0"`（关掉 1080P 转码，只给原始 HEVC 直连） |
 | 允许代理内网媒体 | environment.ALLOW_PRIVATE_MEDIA: `"1"`（默认拒绝，防 SSRF） |
 | 改时区 | environment.TZ: `"Asia/Shanghai"` |
-| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.19`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.19` |
+| 固定版本 | image 改成 `ghcr.io/kid941005/hongguo-web:0.14.20`，或 Docker Hub 的 `docker.io/kid941005/hongguo-web:0.14.20` |
 
 ### 基础
 
@@ -231,7 +242,7 @@ docker run -d --name hongguo-web \
 | --- | --- | --- |
 | PORT | 8787 | 容器内监听端口 |
 | HOST | 0.0.0.0 | 监听地址 |
-| DATA_DIR | /app/data | 配置、用户源、缓存、账号库（hongguo.db）目录；必须可写并挂持久卷 |
+| DATA_DIR | /app/data | 配置、用户源、缓存、账号库（hongguo.db）目录；必须可写，并挂到宿主机目录 |
 | SOURCES_DIR | /app/sources/builtin | 内置源目录，镜像自带 |
 | TOKEN | 空 | 设置后所有 /api/* 需带 `Authorization: Bearer <TOKEN>` 或 `?at=<TOKEN>`（`?token=` 兼容旧链接）；未设置时管理写接口与 /api/metrics 只接受内网来源 |
 | TRUST_PROXY | 空 | 1 时按 X-Forwarded-For 第一跳识别客户端 IP；只在可信反向代理后开启，否则可被伪造 |
@@ -529,7 +540,7 @@ hongguo-web/
 - **红果加密格式**：只支持 CENC（AES-128-CTR）、每样本 8 字节 IV、无 subsample、moov 前置的非分片 MP4；上游若改格式会返回 CENC_UNSUPPORTED，而不是花屏。
 - **官方取址会被限流**：按匿名设备身份 + 出口 IP 双重限流，空正文 / 403 / 429 会进入冷却并回落 360P；这是有意为之，避免把 IP 打进惩罚窗。
 - **替代源依赖同名剧**：按标题相似度跨源匹配；红果独播剧、译名差异大的剧通常找不到候选。
-- **账号数据库**：DATA_DIR/hongguo.db；必须挂持久卷，备份直接拷这个文件（建议先停容器）。
+- **账号数据库**：DATA_DIR/hongguo.db；必须挂到本地目录，备份直接拷这个文件（建议先停容器）。
 - **PWA**：Service Worker 只在 https:// 或 http://localhost 启用；局域网纯 HTTP 可用但没有离线缓存、不能安装。
 - **清晰度取决于源**：只有提供 master playlist 的 HLS 源才有档位可切；单码率 HLS 与 MP4 直链只有一项。
 - **推荐页首次加载慢**：需要抓四个榜单共 20 页（约 10 秒），结果缓存 10 分钟。
@@ -540,6 +551,7 @@ hongguo-web/
 ## 版本说明
 
 最新发布见 [Releases](https://github.com/kid941005/hongguo-web/releases)。main 对应 `:edge`；正式版本打 v* 标签并同时推 `:版本号` 与 `:latest`。
+- **v0.14.20**：数据目录改为本地 bind 挂载。默认 compose 的 `volumes` 从命名卷 `hongguo-data:/app/data` 改为 `./hongguo-data:/app/data`，账号库/历史/收藏/导入的源直接落在宿主机当前目录，方便查看与备份（README 升级章节已附旧卷迁移命令）；`compose.host.yaml` 同步改为 `./hongguo-data:/app/data`。 本机 8787 容器已升级到该版本（数据已从旧命名卷 `app_hongguo-data` 迁移到 `app/hongguo-data`，`/health` 报 `0.14.20`，状态 healthy）。
 - **v0.14.19**：部署方式增强。① 端口改为环境变量驱动：`PORT=9000 docker compose up -d` 即可换端口（bridge 模式下 ports 两侧同步跟随 `PORT`），无需改文件。② 新增 [compose.host.yaml](compose.host.yaml)：`network_mode: host`，不写 ports，监听端口只由 `PORT` 决定，适合 NAS / Linux 主机直连宿主机网络；健康检查同样按 `PORT` 探测。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.19`，状态 healthy）。
 - **v0.14.18**：清晰度默认值修正。取消 v0.14.17 的「默认档位自适应」——不再按手机/核数/网络把默认清晰度降到 720P/540P，默认始终是「自动（最高，1080P）」，仅在最高档本机无法解码时才退到本机可播的最高档；自动降档只在解码失败时发生。v0.14.17 的边下边转（P0-1）与空闲自动取消（P0-2）保持不变。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.18`，状态 healthy）。
 - **v0.14.17**：起播与卡顿优化（P0-1/P0-2/P0-3）。① **边下边转**：以前要先把整集（1080P 7–10 MB）下载完才开始转码，冷启动首帧动辄 8 秒；现在只预读 moov（约 1 MB）就启动 ffmpeg，剩下的 mdat 边下边喂给它，实测 1080P 首个分片 8.0s → 2.0s、720P 2.7s → 2.0s。② **空闲自动取消**：播放端 60 秒不再取清单/分片就自动杀掉转码（`HLS_TC_IDLE_MS`），修复「页面关了 ffmpeg 还在空转、把并发槽位占满」。③ ~~默认档位自适应~~：曾按设备限制默认档（手机 720P、≤4 核 540P），该行为已在 **v0.14.18 取消**，默认始终最高档。 本机 8787 容器已升级到该版本（`docker compose up -d` 后 `/health` 报 `0.14.17`，状态 healthy）。
