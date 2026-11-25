@@ -169,7 +169,7 @@ input:focus,textarea:focus,.select:focus{border-color:var(--brand)}
 .player-inner{width:min(1100px,100%);max-height:100%;display:flex;flex-direction:column;gap:10px}
 .player-bar{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .ptitle{font-size:14px;color:var(--ptitle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#video{width:100%;max-height:78vh;background:#000;border-radius:10px}
+#video{width:100%;max-height:78vh;background:#000;border-radius:10px;object-fit:contain}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:60;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal-box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;
   width:min(620px,100%);max-height:90vh;overflow:auto}
@@ -322,9 +322,11 @@ input:focus,textarea:focus,.select:focus{border-color:var(--brand)}
   display:block;position:relative;height:33.3333%;width:100%;flex:0 0 33.3333%;
   background:#000;overflow:hidden
 }
+/* 铺满格子但用 contain：横屏、以及比手机更「宽」的 9:16 片子都要看到整幅画面。
+   黑边可以有，左右或上下裁切不行。竖屏仍会顶到屏幕宽度，不会被额外缩小。 */
 .player.feed .reel-pane video,.player.feed #video{
   position:absolute;inset:0;width:100%;height:100%;max-height:none;min-height:0;
-  border-radius:0;object-fit:cover;background:#000
+  border-radius:0;object-fit:contain;background:#000
 }
 .player.feed .reel-fallback{
   display:flex;position:absolute;inset:0;align-items:center;justify-content:center;

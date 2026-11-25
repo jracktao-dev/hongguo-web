@@ -2597,7 +2597,6 @@
       armStallCheck(v, 1200);
       syncFeedProgress();
       syncSpinner();
-      fitFeedVideo(v);
     }, opt);
     // 首帧就绪的早检查：有音无画时 videoWidth 一直是 0，早一点提示能少等几秒。
     v.addEventListener('loadeddata', function () {
@@ -2852,12 +2851,6 @@
     if (!ep) return '';
     return ep.name || ('第 ' + (epIdx + 1) + ' 集');
   }
-  // 竖屏短剧铺满（和抖音一样上下相接）。横屏片子仍完整显示，避免上下被裁掉。
-  function fitFeedVideo(v) {
-    if (!v) return;
-    if (!feedActive()) { v.style.objectFit = ''; return; }
-    if (v.videoWidth && v.videoHeight) v.style.objectFit = v.videoHeight >= v.videoWidth ? 'cover' : 'contain';
-  }
   function syncReelLabels() {
     var prev = $('reelPrevLabel'), next = $('reelNextLabel');
     if (prev) prev.textContent = epTitle((state.epIdx || 0) - 1);
@@ -2902,8 +2895,15 @@
     try { v.currentTime = ratio * v.duration; } catch (e) {}
     syncFeedProgress();
   }
+  function resetTrackTransform() {
+    var track = $('reelTrack'); if (!track) return;
+    track.style.transition = 'none';
+    track.style.transform = '';
+  }
   function snapTrack(animate) {
     var track = $('reelTrack'); if (!track) return;
+    // -33.333% 只对「三格竖滑」有意义。桌面轨道没有这三格，留着这段位移会把画面顶出视口。
+    if (!$('player').classList.contains('feed')) { resetTrackTransform(); return; }
     var ms = animate === false ? 0 : feedMotionMs();
     track.style.transition = ms ? ('transform ' + ms + 'ms cubic-bezier(.22,.9,.3,1)') : 'none';
     track.style.transform = 'translate3d(0,-33.3333%,0)';
@@ -2941,10 +2941,9 @@
     }
     if (!on) {
       stopBoost();
-      if (was) snapTrack(false);
+      resetTrackTransform();
     }
-    preloadMap.forEach(function (entry) { placePreload(entry); if (entry.el) fitFeedVideo(entry.el); });
-    fitFeedVideo($('video'));
+    preloadMap.forEach(function (entry) { placePreload(entry); });
   }
   function maybeFeedHint() {
     try {
@@ -3174,7 +3173,6 @@
     entry.authedUrl = playUrl;
     function markReady() {
       entry.ready = el.readyState >= 2;
-      fitFeedVideo(el);
       if (el.id === 'video') return;
       try { el.pause(); } catch (e) {}
       // 预览停在开头。只在已经缓冲的范围内回退，避免把刚下到的数据丢掉。
