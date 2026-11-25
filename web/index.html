@@ -137,7 +137,26 @@
         <button id="btnClosePlayer" class="btn ghost" title="关闭播放器（快捷键 Esc 退出全屏）">关闭 ✕</button>
       </div>
     </div>
-    <video id="video" controls playsinline preload="metadata"></video>
+    <div id="reel" class="reel">
+      <div id="reelTrack" class="reel-track">
+        <div class="reel-pane" data-slot="prev"><div class="reel-fallback" id="reelPrevLabel"></div></div>
+        <div class="reel-pane" data-slot="current">
+          <video id="video" controls playsinline webkit-playsinline preload="metadata"></video>
+        </div>
+        <div class="reel-pane" data-slot="next"><div class="reel-fallback" id="reelNextLabel"></div></div>
+      </div>
+      <div id="reelSpinner" class="reel-spinner hidden" aria-hidden="true"></div>
+      <div id="reelPause" class="reel-pause hidden" aria-hidden="true"><span>▶</span></div>
+      <div id="speedHint" class="speed-hint hidden" aria-live="polite">2× 快进中</div>
+      <div id="reelHeart" class="reel-heart hidden" aria-hidden="true">♥</div>
+      <div id="reelProgress" class="reel-progress">
+        <div id="reelTime" class="reel-time"></div>
+        <div id="reelScrub" class="reel-progress-hit">
+          <div class="reel-progress-track"><div id="reelProgressFill" class="reel-progress-fill"></div></div>
+        </div>
+      </div>
+    </div>
+    <div id="reelPool" class="reel-pool" aria-hidden="true"></div>
     <div id="playerError" class="player-error hidden">
       <span id="playerErrorText"></span>
       <button id="btnPlayerRetry" class="btn ghost mini" type="button">重试</button>
