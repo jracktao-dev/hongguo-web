@@ -1518,8 +1518,11 @@
     // 换集令牌提前占上：后面无论走预加载还是重新取址，旧的 /api/play 都不能再把播放器抢回去。
     var mySeq = ++playSeq;
     var from = { line: fromLine, ep: fromEp };
-    if (!same && tryPromoteEpisode(lineIdx, epIdx, startAt, autoNext, from)) return;
-    if (!same && isPhoneViewport() && hasMedia) {
+    // 画中画、以及本来就有声音的自动连播，必须继续用这一个 <video>。
+    // 换成静音的预加载元素会丢掉用户手势，下一集就没声，甚至要再点一下才播。
+    var reuseEl = !!(hasMedia && active && (isPipVideo(active) || (autoNext && !active.muted)));
+    if (!same && !reuseEl && tryPromoteEpisode(lineIdx, epIdx, startAt, autoNext, from)) return;
+    if (!same && isPhoneViewport() && hasMedia && !reuseEl) {
       parkActiveVideo(active, fromLine, fromEp);
       ensureActiveVideo();
     }
@@ -2370,6 +2373,7 @@
     applyRate();
     state.autoNextLatch = false;
     armPlayWatchdog();
+    claimMedia(v);
     watchPlay(v, auto);
   }
 
@@ -2430,10 +2434,30 @@
 
   // 自动切集的三重守卫（对齐糖葫芦 _autoAdvance && _foreground && !_panelOpen）：
   // ① 连播开关；② 页面在前台；③ 没有弹层挡着（本项目没有独立剧集面板，取「任一遮罩弹层打开」为等价条件）。
+  // 浏览器画中画 / iOS 系统小窗。页面退到后台时 document 会变成 hidden，但用户还在看这只小窗。
+  var pipEl = null;
+  function isPipVideo(v) {
+    v = v || $('video');
+    if (!v) return false;
+    if (pipEl === v) return true;
+    try {
+      if (document.pictureInPictureElement === v) return true;
+      if (v.webkitPresentationMode === 'picture-in-picture') return true;
+    } catch (e) {}
+    return false;
+  }
+  function notePip(v, on) {
+    if (!v) return;
+    if (on) pipEl = v;
+    else if (pipEl === v) pipEl = null;
+  }
   function autoNextAllowed() {
     if (!state.autoNext) return false;
-    if ($('player').classList.contains('hidden')) return false;
-    if (document.visibilityState && document.visibilityState !== 'visible') return false;
+    var v = $('video');
+    var pip = isPipVideo(v);
+    if ($('player').classList.contains('hidden') && !pip) return false;
+    // 小窗还在播时，页面隐藏不能当成「用户离开了」。
+    if (!pip && document.visibilityState && document.visibilityState !== 'visible') return false;
     var modals = document.querySelectorAll('.modal:not(.hidden)');
     if (modals && modals.length) return false;
     return true;
@@ -2610,7 +2634,9 @@
       if (v.buffered.end(v.buffered.length - 1) > 0) clearPlayWatchdog();
     }, opt);
     v.addEventListener('timeupdate', function () {
-      syncFeedProgress();
+      // 只认当前这一集的元素。预加载的邻集也在播缓冲，不能把它们的进度写进条上。
+      if (!isClaimed(v)) return;
+      syncFeedProgress(v);
       // 记录最后稳定位置：假结束时用它续播，避免从头再来
       if (!v.seeking && v.currentTime > 0) state.lastPos = v.currentTime;
       if (!state.histKey) return;
@@ -2621,6 +2647,7 @@
     }, opt);
     // 临近片尾兜底：有些浏览器/流不会稳定触发 ended，用 timeupdate 补一次。
     v.addEventListener('timeupdate', function () {
+      if (!isClaimed(v)) return;
       if (v.paused || v.seeking) return;
       if (!isFinite(v.duration) || v.duration <= 1) return;
       // 转码 HLS 还在追加分片时 duration 会一路变长，此时「close to duration」不代表播完；
@@ -2634,9 +2661,10 @@
     v.addEventListener('playing', function () { hidePlayerError(); syncSpinner(); syncPauseIcon(); }, opt);
     v.addEventListener('waiting', function () { syncSpinner(); }, opt);
     v.addEventListener('ended', function () {
-      // 转码清单尚未结束（没有 ENDLIST）：浏览器只是播到了「当前已产出」的末尾，
-      // 后面还有分片要追加，继续播即可，绝不能当成片尾去切下一集。
-      if (state.hlsMode && state.hlsLive) { try { v.play(); } catch (e) {} return; }
+      if (!isClaimed(v)) return;
+      // 转码清单尚未结束（没有 ENDLIST）时，ended 只是「当前已产出的末尾」。
+      // 但若播放头确实顶到了时长（真片尾），hlsLive 可能是预加载提升后没再收到 ENDLIST 的过期标志，仍要连播。
+      if (state.hlsMode && state.hlsLive && !realEnd(v)) { try { v.play(); } catch (e) {} return; }
       // 假结束（时长为 0 或离片尾还差得远）说明是取流/解码中断，重播当前集而不是切下一集
       if (!realEnd(v)) { recoverFromFalseEnd(v); return; }
       var dur = Math.floor(v.duration || 0);
@@ -2689,6 +2717,13 @@
     // iOS 原生视频全屏没有 fullscreenchange，只能靠这组 webkit 事件同步按钮与 state
     v.addEventListener('webkitbeginfullscreen', function () { state.iosFs = true; syncFullBtn(); }, opt);
     v.addEventListener('webkitendfullscreen', function () { state.iosFs = false; syncFullBtn(); }, opt);
+    v.addEventListener('enterpictureinpicture', function () { notePip(v, true); }, opt);
+    v.addEventListener('leavepictureinpicture', function () { notePip(v, false); }, opt);
+    v.addEventListener('webkitpresentationmodechanged', function () {
+      var mode = '';
+      try { mode = v.webkitPresentationMode || ''; } catch (e) {}
+      notePip(v, mode === 'picture-in-picture');
+    }, opt);
   }
   function bindPlayerEvents() {
     rebindVideo($('video'));
@@ -2705,7 +2740,15 @@
       reel.addEventListener('pointermove', onFeedPointerMove);
       reel.addEventListener('pointerup', onFeedPointerUp);
       reel.addEventListener('pointercancel', onFeedPointerUp);
-      reel.addEventListener('contextmenu', function (e) { if (feedActive()) e.preventDefault(); });
+      // 长按快进时系统会弹出放大镜/文本选区。拦下选区和菜单，不拦 pointer 手势本身。
+      ['contextmenu', 'selectstart', 'dragstart'].forEach(function (ev) {
+        reel.addEventListener(ev, function (e) { if (feedActive()) e.preventDefault(); });
+      });
+      reel.addEventListener('touchstart', function (e) {
+        if (!feedActive()) return;
+        if (e.target && e.target.closest && e.target.closest('button, a, input, select, textarea')) return;
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
     }
     window.addEventListener('resize', function () {
       if (!$('player').classList.contains('hidden')) syncFeedMode();
@@ -2777,18 +2820,29 @@
   // 浏览器拦了有声自动播放时静音再试一次。换集/切档被新的 load 打断（AbortError）不是失败。
   function watchPlay(v, auto) {
     if (!v) return;
+    if (!v.paused && !v.ended && v.readyState >= 2) return;
+    var keepSound = !v.muted;
     var p = v.play();
     if (p && p.catch) p.catch(function (err) {
       if (!err) return;
       if (err.name === 'NotAllowedError') {
         if (v.muted) return;
-        v.muted = true;
-        var retry = v.play();
-        if (retry && retry.catch) retry.catch(function () {});
-        var phone = isPhoneViewport();
-        toast(auto
-          ? (phone ? '已静音自动续播，点一下画面可恢复声音' : '已静音自动续播，按 M 键可恢复声音')
-          : (phone ? '浏览器拦截了有声播放，已静音开始播放，点一下画面可恢复声音' : '浏览器拦截了有声播放，已静音开始播放，按 M 键可恢复声音'));
+        // 先再试一次有声（滑动的手势可能还在）。只有浏览器再次拒绝，才静音把这一集播下去。
+        var again = v.play();
+        var muteFallback = function () {
+          if (!keepSound || v.muted) return;
+          v.muted = true;
+          var retry = v.play();
+          if (retry && retry.catch) retry.catch(function () {});
+          var phone = isPhoneViewport();
+          toast(auto
+            ? (phone ? '已静音自动续播，点一下画面可恢复声音' : '已静音自动续播，按 M 键可恢复声音')
+            : (phone ? '浏览器拦截了有声播放，已静音开始播放，点一下画面可恢复声音' : '浏览器拦截了有声播放，已静音开始播放，按 M 键可恢复声音'));
+        };
+        if (again && again.then) again.then(function () {}, function (err2) {
+          if (err2 && err2.name === 'NotAllowedError') muteFallback();
+        });
+        else muteFallback();
         return;
       }
       if (err.name === 'AbortError') return;
@@ -2874,14 +2928,30 @@
     var show = feedActive() && !feedAnim && v && v.paused && !v.ended && v.readyState >= 2 && !feedBoosting;
     el.classList.toggle('hidden', !show);
   }
-  function syncFeedProgress() {
+  // 每一集换一个代号。进度条只吃代号还对得上、并且就是 #video 的那个元素。
+  var activeGen = 0;
+  function claimMedia(v) {
+    if (!v) return;
+    activeGen += 1;
+    v._hgGen = activeGen;
+    v._hgProg = null;
+    try { delete v._hgAllowPlay; } catch (e) { v._hgAllowPlay = false; }
+  }
+  function isClaimed(v) {
+    return !!(v && v.id === 'video' && v._hgGen === activeGen);
+  }
+  function syncFeedProgress(v) {
     if (!feedActive()) return;
-    var v = $('video');
+    v = v || $('video');
+    if (!isClaimed(v)) return;
     var fill = $('reelProgressFill');
     var time = $('reelTime');
-    if (!v || !fill) return;
+    if (!fill) return;
     var dur = (v.duration && isFinite(v.duration)) ? v.duration : 0;
     var cur = v.currentTime || 0;
+    // 邻集预加载或过期的 timeupdate 会把进度打回去。用户正在拖动时不拦。
+    if (!v.seeking && v._hgProg != null && cur + 0.35 < v._hgProg) return;
+    v._hgProg = cur;
     fill.style.width = (dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0) + '%';
     if (time) time.textContent = fmtDur(cur) + ' / ' + fmtDur(dur);
   }
@@ -3098,9 +3168,10 @@
       try { neu.currentTime = state.pendingSeek; } catch (e) {}
     }
     state.pendingSeek = 0;
+    claimMedia(neu);
     watchPlay(neu, auto);
     syncPreloadWindow();
-    syncFeedProgress();
+    syncFeedProgress(neu);
     syncPauseIcon();
     syncSpinner();
     return true;
@@ -3173,7 +3244,8 @@
     entry.authedUrl = playUrl;
     function markReady() {
       entry.ready = el.readyState >= 2;
-      if (el.id === 'video') return;
+      // 已经提升成当前集的元素不能再被预加载逻辑暂停或拉回开头，否则进度条会来回跳。
+      if (el.id === 'video' || el._hgAllowPlay) return;
       try { el.pause(); } catch (e) {}
       // 预览停在开头。只在已经缓冲的范围内回退，避免把刚下到的数据丢掉。
       if (el.currentTime > 0.05 && el.currentTime < 1.5) {
@@ -3181,6 +3253,11 @@
       }
     }
     el.addEventListener('loadeddata', markReady);
+    // 手机同时只能顺畅解一路。预加载一旦真正播起来就立刻停，免得和当前集抢时钟。
+    el.addEventListener('playing', function () {
+      if (el.id === 'video' || el._hgAllowPlay) return;
+      try { el.pause(); } catch (e) {}
+    });
     el.addEventListener('progress', function () {
       if (el.id === 'video') return;
       try {
@@ -3266,15 +3343,16 @@
     });
     syncReelLabels();
   }
-  function primeIncoming(dir) {
-    var entry = preloadEntry(state.line, (state.epIdx || 0) + dir);
-    if (!entry || !entry.el || entry.el.id === 'video') return;
+  // 在用户手势还没结束时，把下一集的静音状态改成和当前集一样并开始播。
+  // 真正的换元素也在这次调用栈里完成，避免过渡动画结束后 play() 被当成无手势而静音。
+  function armIncomingSound(lineIdx, epIdx) {
+    var entry = preloadEntry(lineIdx, epIdx);
     var cur = $('video');
-    var muted = !!(cur && cur.muted);
-    entry.el.muted = muted;
-    try { entry.el.volume = muted ? 0 : ((cur && isFinite(cur.volume)) ? cur.volume : 1); } catch (e) {}
+    if (!entry || !entry.el || !cur || entry.el === cur) return;
+    entry.el._hgAllowPlay = true;
+    entry.el.muted = !!cur.muted;
+    try { entry.el.volume = cur.muted ? 0 : (isFinite(cur.volume) ? cur.volume : 1); } catch (e) {}
     try { entry.el.playbackRate = feedBoosting ? feedBoostRate : (state.rate || 1); } catch (e) {}
-    if (cur) { try { cur.pause(); } catch (e) {} }
     var p = entry.el.play();
     if (p && p.catch) p.catch(function () {});
   }
@@ -3289,35 +3367,10 @@
       return;
     }
     var lineIdx = state.line;
-    var track = $('reelTrack');
-    if (!track) { playEpisode(lineIdx, target, 0, !!auto); return; }
-    feedAnim = true;
-    // play() 必须留在这次滑动/点击的调用栈里，等过渡结束再播会被浏览器当成没有手势。
-    primeIncoming(dir);
-    var ms = feedMotionMs();
-    track.style.transition = ms ? ('transform ' + ms + 'ms cubic-bezier(.22,.8,.32,1)') : 'none';
-    track.style.transform = dir > 0 ? 'translate3d(0,-66.6666%,0)' : 'translate3d(0,0,0)';
-    var done = false;
-    function finish(ev) {
-      if (ev && ev.target && ev.target !== track) return;
-      if (done) return;
-      done = true;
-      track.removeEventListener('transitionend', finish);
-      track.style.transition = 'none';
-      playEpisode(lineIdx, target, 0, !!auto);
-      var trackNow = $('reelTrack');
-      if (trackNow) {
-        trackNow.style.transition = 'none';
-        trackNow.style.transform = 'translate3d(0,-33.3333%,0)';
-      }
-      feedAnim = false;
-      syncPauseIcon();
-    }
-    if (!ms) finish();
-    else {
-      track.addEventListener('transitionend', finish);
-      setTimeout(finish, ms + 120);
-    }
+    if (!auto) armIncomingSound(lineIdx, target);
+    // 手指已经跟完了。换集和 play() 放在松手的调用栈里，声音才不会丢。
+    playEpisode(lineIdx, target, 0, !!auto);
+    snapTrack(true);
   }
   function startBoost() {
     var v = $('video'); if (!v) return;
@@ -3509,8 +3562,15 @@
       if (!auto) toast('已经是最后一集');
       return;
     }
-    if (feedActive()) { animateCommit(1, auto); return; }
-    playEpisode(state.line, next, 0, auto);
+    var v = $('video');
+    // 自动连播和画中画都沿用当前这个已经在播的元素，不走「提升预加载元素」那条会静音的路。
+    if (auto || isPipVideo(v)) {
+      playEpisode(state.line, next, 0, auto);
+      if (feedActive()) snapTrack(false);
+      return;
+    }
+    if (feedActive()) { animateCommit(1, false); return; }
+    playEpisode(state.line, next, 0, false);
   }
 
   function showError(e) {

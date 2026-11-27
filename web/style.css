@@ -324,6 +324,12 @@ input:focus,textarea:focus,.select:focus{border-color:var(--brand)}
 }
 /* 铺满格子但用 contain：横屏、以及比手机更「宽」的 9:16 片子都要看到整幅画面。
    黑边可以有，左右或上下裁切不行。竖屏仍会顶到屏幕宽度，不会被额外缩小。 */
+.player.feed .reel-pane,
+.player.feed .reel-pane video,
+.player.feed #video,
+.player.feed .reel-fallback{
+  -webkit-touch-callout:none;-webkit-user-select:none;user-select:none;-webkit-user-drag:none
+}
 .player.feed .reel-pane video,.player.feed #video{
   position:absolute;inset:0;width:100%;height:100%;max-height:none;min-height:0;
   border-radius:0;object-fit:contain;background:#000
