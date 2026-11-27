@@ -1496,6 +1496,10 @@
     var d = state.detail; if (!d) return;
     var line = d.lines[lineIdx]; if (!line) return;
     var ep = line.episodes[epIdx]; if (!ep) return;
+    var fromLine = state.line, fromEp = state.epIdx;
+    var active = $('video');
+    var hasMedia = !!(active && (active.currentSrc || active.getAttribute('src') || state.hls));
+    var same = hasMedia && fromLine === lineIdx && fromEp === epIdx;
     state.autoNextLatch = false;
     if (!recovering) state.falseEndRecovered = false; // 换集/手动重播才重置；自动恢复保留一次性标志
     state.lastPos = Math.max(0, Math.floor(startAt || 0));
@@ -1510,14 +1514,48 @@
       dur: (histGet(state.viewSource, d.id) || {}).dur || 0
     });
     updateResumeBar(d);
-    if (!autoNext) toast('正在解析播放地址…');
+    syncReelLabels();
+    // 换集令牌提前占上：后面无论走预加载还是重新取址，旧的 /api/play 都不能再把播放器抢回去。
     var mySeq = ++playSeq;
+    var from = { line: fromLine, ep: fromEp };
+    // 画中画、以及本来就有声音的自动连播，必须继续用这一个 <video>。
+    // 换成静音的预加载元素会丢掉用户手势，下一集就没声，甚至要再点一下才播。
+    var reuseEl = !!(hasMedia && active && (isPipVideo(active) || (autoNext && !active.muted)));
+    if (!same && !reuseEl && tryPromoteEpisode(lineIdx, epIdx, startAt, autoNext, from)) return;
+    if (!same && isPhoneViewport() && hasMedia && !reuseEl) {
+      parkActiveVideo(active, fromLine, fromEp);
+      ensureActiveVideo();
+    }
+    function stillCurrent() {
+      return mySeq === playSeq && state.detail === d && state.line === lineIdx && state.epIdx === epIdx;
+    }
+    var cached = preloadEntry(lineIdx, epIdx);
+    if (cached && cached.url && !cached.failed && (cached.el || !cached.promise)) {
+      if (!stillCurrent()) return;
+      openPlayer(cached.url, cached.type || cached.openType, startAt, autoNext, cached.qualityInfo);
+      return;
+    }
+    if (cached && cached.promise && !cached.url && !cached.failed) {
+      // 手机上用转圈代替「正在解析」toast，避免滑到下一集时先被一句提示挡住。
+      if (!autoNext && !isPhoneViewport()) toast('正在解析播放地址…');
+      if (isPhoneViewport()) showReelSpinner(true);
+      cached.promise.then(function () {
+        if (!stillCurrent()) return;
+        if (tryPromoteEpisode(lineIdx, epIdx, startAt, autoNext, from)) return;
+        var ready = preloadEntry(lineIdx, epIdx);
+        if (ready && ready.url && !ready.failed) openPlayer(ready.url, ready.type || ready.openType, startAt, autoNext, ready.qualityInfo);
+      });
+      return;
+    }
+    if (!autoNext && !isPhoneViewport()) toast('正在解析播放地址…');
+    else if (isPhoneViewport()) showReelSpinner(true);
     api('/api/play', { source: state.viewSource, flag: line.flag, id: ep.id }).then(function (r) {
       // 过期响应（用户又点了别的集/关了播放器）直接丢弃，避免「点 A 播 B」。
-      if (mySeq !== playSeq || state.detail !== d) return;
+      if (!stillCurrent()) return;
       openPlayer(r.url, r.type, startAt, autoNext, r.quality);
     }).catch(function (e) {
-      if (mySeq !== playSeq || state.detail !== d) return;
+      if (!stillCurrent()) return;
+      showReelSpinner(false);
       var msg = (e && e.message) || '未知错误';
       if (autoNext) toast('下一集播放失败：' + msg);
       else { toast('播放失败：' + msg); showPlayerError(msg); }
@@ -1545,7 +1583,9 @@
   function rateLabel(r) { return (r === 1 ? '1.0' : String(r)) + '×'; }
   function applyRate() {
     var v = $('video');
-    try { v.playbackRate = state.rate; } catch (e) {}
+    // 长按快进只临时改元素倍速，按钮和记住的倍速仍是松手后要回到的那一档。
+    var rate = feedBoosting ? feedBoostRate : state.rate;
+    try { if (v) v.playbackRate = rate; } catch (e) {}
     var btn = $('btnRate');
     if (btn) { btn.textContent = rateLabel(state.rate); btn.classList.toggle('on', state.rate !== 1); }
   }
@@ -1620,12 +1660,14 @@
   // 档位可播性判定：codec 为 vvc/hevc 时可能本机解不了，但服务端 transcode:true 表示
   // 该档位会被转码成 H.264（浏览器能播），此时仍可点。
   // 返回 { dead, badge, title }：dead=true 表示置灰不可点。
-  function qualityGate(o) {
+  function qualityGate(o, options) {
     if (!o) return { dead: false, badge: '', title: '' };
+    // options 只在预取邻集时传入（那一集自己的档位表）。不传则仍看当前正在播的档位表。
+    var opts = options || state.qualityOptions || [];
     // 「自动（最高）」按最高档判定：服务端 auto 等价于最高档，本机解不了最高档时同样置灰，
     // 否则在无 HEVC 的浏览器里会默认起播必然黑屏的 HEVC 档。
     if (o.key === 'auto') {
-      var best = (state.qualityOptions || []).filter(function (x) { return x.key !== 'auto'; })[0];
+      var best = opts.filter(function (x) { return x.key !== 'auto'; })[0];
       if (best) {
         var bg = qualityGate(best);
         if (bg.dead) return { dead: true, badge: '本机不支持最高档', title: '最高档「' + best.label + '」' + bg.badge + '，请选择其它清晰度' };
@@ -1647,8 +1689,9 @@
   }
   // 默认起播档位：高清优先——始终选「自动（最高）」，不按设备/网络自动降分辨率。
   // 只有最高档本机确实解不了时，才退到本机可播的最高档；360P 兼容永远只做最后兜底。
-  function defaultPlayableOption() {
-    var opts = (state.qualityOptions || []).filter(function (o) { return o.url && !qualityGate(o).dead; });
+  function defaultPlayableOption(options) {
+    var table = options || state.qualityOptions || [];
+    var opts = table.filter(function (o) { return o.url && !qualityGate(o, table).dead; });
     if (!opts.length) return null;
     var auto = opts.filter(function (o) { return o.key === 'auto'; })[0];
     if (auto) return auto;
@@ -1789,6 +1832,9 @@
       if (pr && pr.catch) pr.catch(function () {});
     }
     updateQualityBtn();
+    // 邻集是按旧清晰度预热的，换档后丢掉，等新地址就绪再按当前档预热。
+    invalidatePreloads();
+    syncPreloadWindow();
     return true;
   }
 
@@ -2155,41 +2201,61 @@
 
   // 把一条 HLS 地址挂到 <video> 上。多码率 master 清单才生成码率档位；服务端转码清单是单码率，
   // 档位仍由 state.qualityOptions（/api/play 给的菜单）决定，这里不覆盖。
-  function attachHls(url) {
-    var v = $('video');
-    state.hlsMode = true;
-    // 服务端转码清单是 EVENT 类型：转码没结束时清单会一直追加分片，video.duration 也随之变长。
-    // 这期间不能用「临近片尾」判断自动连播，否则刚播到当前已产出的末尾就被当成播完而跳集。
-    state.hlsLive = true;
+  function attachHls(url, videoEl) {
+    var v = videoEl || $('video');
+    // 不传元素 = 挂到当前播放器。传了别的元素就是邻集预加载，不能抢 state.hls。
+    var active = !videoEl || v === $('video');
+    if (active) {
+      state.hlsMode = true;
+      // 服务端转码清单是 EVENT 类型：转码没结束时清单会一直追加分片，video.duration 也随之变长。
+      // 这期间不能用「临近片尾」判断自动连播，否则刚播到当前已产出的末尾就被当成播完而跳集。
+      state.hlsLive = true;
+    }
     if (window.Hls && window.Hls.isSupported()) {
-      var hls = new window.Hls({ maxBufferLength: 30 });
-      state.hls = hls;
+      var hls = new window.Hls(active
+        ? { maxBufferLength: 30 }
+        : { maxBufferLength: 8, maxMaxBufferLength: 14, capLevelToPlayerSize: true });
+      if (active) state.hls = hls;
       hls.loadSource(url); hls.attachMedia(v);
-      hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
-        state.levels = (hls.levels || []).map(function (lv) {
-          return { height: lv.height, bitrate: lv.bitrate, name: lv.name || '' };
-        });
-        // 真正的多码率 HLS（master playlist）才给出多档选项；单码率只显示实际分辨率。
-        if (state.levels.length > 1) {
-          state.qualityOptions = [{ label: '自动', levelIndex: -1 }].concat(state.levels.map(function (lv, i) {
-            return { label: levelLabel(lv), levelIndex: i };
-          }));
-        }
-        state.busyRetries = 0;
-        updateQualityBtn();
+      if (active) bindHlsEvents(hls);
+      return hls;
+    }
+    v.src = url;
+    return null;
+  }
+  // 预加载实例在「成为当前集」之前不该弹错误横幅；停放之后 state.hls 不再指向它，回调直接退出。
+  function bindHlsEvents(hls) {
+    if (!hls || hls._hgWired || !window.Hls) return;
+    hls._hgWired = true;
+    function live() { return state.hls === hls; }
+    hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
+      if (!live()) return;
+      state.levels = (hls.levels || []).map(function (lv) {
+        return { height: lv.height, bitrate: lv.bitrate, name: lv.name || '' };
       });
-      // 清单里出现 EXT-X-ENDLIST 后 hls.js 会把 details.live 置 false：那一刻起 duration 才是真实总长。
-      function syncLive(d) { if (d && d.details) state.hlsLive = d.details.live !== false; }
-      hls.on(window.Hls.Events.LEVEL_LOADED, function (_e, data) { syncLive(data); });
-      hls.on(window.Hls.Events.LEVEL_UPDATED, function (_e, data) { syncLive(data); });
-      hls.on(window.Hls.Events.LEVEL_SWITCHED, function () {
-        if (state.switching) state.switching = false;
-        updateResBadge(); updateQualityBtn();
-      });
-      var recovered = false;
-      hls.on(window.Hls.Events.ERROR, function (_e, data) {
-        if (!data || !data.fatal) return;
-        if (state.playKind === 'native') {
+      // 真正的多码率 HLS（master playlist）才给出多档选项；单码率只显示实际分辨率。
+      if (state.levels.length > 1) {
+        state.qualityOptions = [{ label: '自动', levelIndex: -1 }].concat(state.levels.map(function (lv, i) {
+          return { label: levelLabel(lv), levelIndex: i };
+        }));
+      }
+      state.busyRetries = 0;
+      updateQualityBtn();
+    });
+    // 清单里出现 EXT-X-ENDLIST 后 hls.js 会把 details.live 置 false：那一刻起 duration 才是真实总长。
+    function syncLive(d) { if (live() && d && d.details) state.hlsLive = d.details.live !== false; }
+    hls.on(window.Hls.Events.LEVEL_LOADED, function (_e, data) { syncLive(data); });
+    hls.on(window.Hls.Events.LEVEL_UPDATED, function (_e, data) { syncLive(data); });
+    hls.on(window.Hls.Events.LEVEL_SWITCHED, function () {
+      if (!live()) return;
+      if (state.switching) state.switching = false;
+      updateResBadge(); updateQualityBtn();
+    });
+    var recovered = false;
+    hls.on(window.Hls.Events.ERROR, function (_e, data) {
+      if (!live()) return;
+      if (!data || !data.fatal) return;
+      if (state.playKind === 'native') {
           // 服务端转码档：转码失败/分片取不到时走和直链一样的降档阶梯，而不是干等一个通用报错。
           if (state.switching) { state.switching = false; updateQualityBtn(); }
           // 503/429 是「转码槽位暂时排满」而不是这一档播不了：先原地等一会儿重试同一档，
@@ -2215,14 +2281,11 @@
         }
         showPlayerError('HLS 流播放失败：' + (data.details || '流错误'));
         toast('播放失败：' + (data.details || '流错误'));
-      });
-    } else {
-      v.src = url;
-    }
+    });
   }
 
   function openPlayer(url, type, startAt, auto, qualityInfo) {
-    var v = $('video');
+    var v = $('video') || ensureActiveVideo();
     state.pendingSeek = Math.max(0, Math.floor(startAt || 0));
     state.lastSave = 0;
     state.quality = -1;
@@ -2304,34 +2367,14 @@
     v.removeAttribute('src');
     try { v.load(); } catch (e) {}
     $('player').classList.remove('hidden');
+    syncFeedMode();
     if (state.hlsMode) attachHls(url);
     else v.src = url;
     applyRate();
     state.autoNextLatch = false;
     armPlayWatchdog();
-    var p = v.play();
-    if (p && p.catch) p.catch(function (err) {
-      if (!err) return;
-      // 自动连播没有用户手势，部分移动端浏览器会以 NotAllowedError 拦截有声播放；静音重试一次
-      // 浏览器拦了有声自动播放（移动端/严格策略）：无论是否自动连播都静音重试一次，
-      // 否则用户点了剧集却看到黑屏、也没有任何提示（点播场景尤其容易被误判成「播放不了」）。
-      if (err.name === 'NotAllowedError') {
-        if (v.muted) return;
-        v.muted = true;
-        var retry = v.play();
-        if (retry && retry.catch) retry.catch(function () {});
-        toast(auto ? '已静音自动续播，按 M 键可恢复声音' : '浏览器拦截了有声播放，已静音开始播放，按 M 键可恢复声音');
-        return;
-      }
-      // 换集/切档/深链自动起播被新的 load 取代时，play() 会以 AbortError 拒绝，这不是播放失败，静默忽略。
-      if (err.name === 'AbortError') return;
-      // 已经有 MediaError、或错误本身就是「没有可播放的源」（NotSupportedError），都交给 error 事件的
-      // 三级阶梯处理：play() 的 reject 常常比 error 事件早一步到达，这里再弹一次会把它的话术盖掉。
-      if (v.error || err.name === 'NotSupportedError') return;
-      var msg = '播放失败：' + (err.message || '未知错误');
-      // 浏览器给的 message 常以 "." 结尾，别再补一个句号，否则会拼出「…was found.。可尝试换源」
-      toast(msg); showPlayerError(msg + (/[。.!！?？]$/.test(msg) ? '' : '。') + '可尝试换源或重试。');
-    });
+    claimMedia(v);
+    watchPlay(v, auto);
   }
 
   function saveProgress(v) {
@@ -2391,10 +2434,30 @@
 
   // 自动切集的三重守卫（对齐糖葫芦 _autoAdvance && _foreground && !_panelOpen）：
   // ① 连播开关；② 页面在前台；③ 没有弹层挡着（本项目没有独立剧集面板，取「任一遮罩弹层打开」为等价条件）。
+  // 浏览器画中画 / iOS 系统小窗。页面退到后台时 document 会变成 hidden，但用户还在看这只小窗。
+  var pipEl = null;
+  function isPipVideo(v) {
+    v = v || $('video');
+    if (!v) return false;
+    if (pipEl === v) return true;
+    try {
+      if (document.pictureInPictureElement === v) return true;
+      if (v.webkitPresentationMode === 'picture-in-picture') return true;
+    } catch (e) {}
+    return false;
+  }
+  function notePip(v, on) {
+    if (!v) return;
+    if (on) pipEl = v;
+    else if (pipEl === v) pipEl = null;
+  }
   function autoNextAllowed() {
     if (!state.autoNext) return false;
-    if ($('player').classList.contains('hidden')) return false;
-    if (document.visibilityState && document.visibilityState !== 'visible') return false;
+    var v = $('video');
+    var pip = isPipVideo(v);
+    if ($('player').classList.contains('hidden') && !pip) return false;
+    // 小窗还在播时，页面隐藏不能当成「用户离开了」。
+    if (!pip && document.visibilityState && document.visibilityState !== 'visible') return false;
     var modals = document.querySelectorAll('.modal:not(.hidden)');
     if (modals && modals.length) return false;
     return true;
@@ -2530,39 +2593,50 @@
     diagTimers.push(id);
   }
 
-  function bindPlayerEvents() {
-    var v = $('video');
+  // 换集时会把预加载好的 <video> 提升成当前播放器，监听必须跟着走，不能留在旧元素上。
+  var videoHook = null;
+  function rebindVideo(v) {
+    if (videoHook) { videoHook.abort(); videoHook = null; }
+    if (!v) return;
+    videoHook = new AbortController();
+    var opt = { signal: videoHook.signal };
     v.addEventListener('loadedmetadata', function () {
       // 元数据已到 = 流是活的，慢提示/超时监测到此为止（真实故障由 error / hls ERROR 负责）。
       clearPlayWatchdog();
       // 有些浏览器在换源/换集后会把 playbackRate 复位，元数据就绪时按记住的倍速再设一次。
-      try { v.playbackRate = state.rate; } catch (e) {}
-      $('btnRate').textContent = rateLabel(state.rate);
+      // 长按快进期间要保持临时倍速，不能把按钮上的常速写回去。
+      applyRate();
       updateResBadge();
       updateQualityBtn();
       if (state.pendingSeek > 3 && isFinite(v.duration) && state.pendingSeek < v.duration - 3) {
         try { v.currentTime = state.pendingSeek; } catch (e) {}
         // 切换清晰度时也走 pendingSeek，但那是同一个位置，不必提示「已续播」。
-        if (!state.silentSeek) toast('已续播至 ' + fmtDur(state.pendingSeek));
+        if (!state.silentSeek && !feedActive()) toast('已续播至 ' + fmtDur(state.pendingSeek));
       }
       state.pendingSeek = 0;
       state.silentSeek = false;
       if (state.switching) { state.switching = false; updateQualityBtn(); }
-      prefetchNext();
+      syncPreloadWindow();
       clearDiag();
       armStallCheck(v, 1200);
-    });
+      syncFeedProgress();
+      syncSpinner();
+    }, opt);
     // 首帧就绪的早检查：有音无画时 videoWidth 一直是 0，早一点提示能少等几秒。
     v.addEventListener('loadeddata', function () {
       clearDiag();
       armStallCheck(v, 400);
-    });
+      syncSpinner();
+    }, opt);
     v.addEventListener('progress', function () {
       // 只要已经缓冲到数据，就说明是「慢」而不是「坏」，撤掉慢提示与超时监测。
       if (!v.buffered || !v.buffered.length) return;
       if (v.buffered.end(v.buffered.length - 1) > 0) clearPlayWatchdog();
-    });
+    }, opt);
     v.addEventListener('timeupdate', function () {
+      // 只认当前这一集的元素。预加载的邻集也在播缓冲，不能把它们的进度写进条上。
+      if (!isClaimed(v)) return;
+      syncFeedProgress(v);
       // 记录最后稳定位置：假结束时用它续播，避免从头再来
       if (!v.seeking && v.currentTime > 0) state.lastPos = v.currentTime;
       if (!state.histKey) return;
@@ -2570,9 +2644,10 @@
       if (now - state.lastSave < 5000) return;
       state.lastSave = now;
       saveProgress(v);
-    });
+    }, opt);
     // 临近片尾兜底：有些浏览器/流不会稳定触发 ended，用 timeupdate 补一次。
     v.addEventListener('timeupdate', function () {
+      if (!isClaimed(v)) return;
       if (v.paused || v.seeking) return;
       if (!isFinite(v.duration) || v.duration <= 1) return;
       // 转码 HLS 还在追加分片时 duration 会一路变长，此时「close to duration」不代表播完；
@@ -2580,18 +2655,22 @@
       if (state.hlsMode && state.hlsLive) return;
       if (v.currentTime < 5) return;   // 极短窗口（清单刚就绪）不参与片尾判定
       if (v.currentTime > 0 && v.duration - v.currentTime <= 0.6) scheduleAutoNext();
-    });
-    v.addEventListener('pause', function () { saveProgress(v); });
+    }, opt);
+    v.addEventListener('pause', function () { saveProgress(v); syncPauseIcon(); }, opt);
+    v.addEventListener('play', function () { syncPauseIcon(); syncSpinner(); }, opt);
+    v.addEventListener('playing', function () { hidePlayerError(); syncSpinner(); syncPauseIcon(); }, opt);
+    v.addEventListener('waiting', function () { syncSpinner(); }, opt);
     v.addEventListener('ended', function () {
-      // 转码清单尚未结束（没有 ENDLIST）：浏览器只是播到了「当前已产出」的末尾，
-      // 后面还有分片要追加，继续播即可，绝不能当成片尾去切下一集。
-      if (state.hlsMode && state.hlsLive) { try { v.play(); } catch (e) {} return; }
+      if (!isClaimed(v)) return;
+      // 转码清单尚未结束（没有 ENDLIST）时，ended 只是「当前已产出的末尾」。
+      // 但若播放头确实顶到了时长（真片尾），hlsLive 可能是预加载提升后没再收到 ENDLIST 的过期标志，仍要连播。
+      if (state.hlsMode && state.hlsLive && !realEnd(v)) { try { v.play(); } catch (e) {} return; }
       // 假结束（时长为 0 或离片尾还差得远）说明是取流/解码中断，重播当前集而不是切下一集
       if (!realEnd(v)) { recoverFromFalseEnd(v); return; }
       var dur = Math.floor(v.duration || 0);
       if (state.histKey) histUpdate(dur, dur, true);
       scheduleAutoNext();
-    });
+    }, opt);
     // HEVC 在 Chrome/Edge 上常见「有声音没画面」：容器与音轨能解，视频轨不支持，且不触发 error。
     // 播了 2 秒还拿不到 videoWidth 就判定该档解不出来：先降到「本机可播的下一档高清」，
     // 360P 兼容只做最后一档（以前直接掉到 360P，明明还有 720P 转码档可用）。
@@ -2602,7 +2681,7 @@
       if (v.paused || v.readyState < 2) return;
       if (v.currentTime < 2) return;
       autoFallbackOnce();
-    });
+    }, opt);
     // 播放失败三级阶梯：同档重试一次 → 回退 360P 兼容线路一次 → 给出具体原因。
     // 旧实现只处理 code 3/4 且直接降档，网络类错误（code 2）完全没提示，页面就那么黑着。
     v.addEventListener('error', function () {
@@ -2622,8 +2701,32 @@
       var msg = '播放失败：' + label + '，可尝试切换数据源或换一集';
       diagnoseAndReport(v, msg);
       toast(msg);
-    });
-    v.addEventListener('dblclick', function (e) { e.preventDefault(); toggleFullscreen(); });
+    }, opt);
+    v.addEventListener('error', onVideoError, opt);
+    // 手机竖滑用单击暂停、双击收藏；桌面仍双击全屏。无 controls 时部分浏览器仍会把 click 当播放切换。
+    v.addEventListener('click', function (e) {
+      if (!feedActive()) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }, opt);
+    v.addEventListener('dblclick', function (e) {
+      if (feedActive()) { e.preventDefault(); return; }
+      e.preventDefault();
+      toggleFullscreen();
+    }, opt);
+    // iOS 原生视频全屏没有 fullscreenchange，只能靠这组 webkit 事件同步按钮与 state
+    v.addEventListener('webkitbeginfullscreen', function () { state.iosFs = true; syncFullBtn(); }, opt);
+    v.addEventListener('webkitendfullscreen', function () { state.iosFs = false; syncFullBtn(); }, opt);
+    v.addEventListener('enterpictureinpicture', function () { notePip(v, true); }, opt);
+    v.addEventListener('leavepictureinpicture', function () { notePip(v, false); }, opt);
+    v.addEventListener('webkitpresentationmodechanged', function () {
+      var mode = '';
+      try { mode = v.webkitPresentationMode || ''; } catch (e) {}
+      notePip(v, mode === 'picture-in-picture');
+    }, opt);
+  }
+  function bindPlayerEvents() {
+    rebindVideo($('video'));
     // 全屏浮层靠这些事件唤出；手机触发不了 mousemove，必须绑 touchstart/pointerdown。
     var fsEl = fsBox();
     if (fsEl) {
@@ -2631,12 +2734,28 @@
         fsEl.addEventListener(ev, showPlayerUi, { passive: true });
       });
     }
+    var reel = $('reel');
+    if (reel) {
+      reel.addEventListener('pointerdown', onFeedPointerDown);
+      reel.addEventListener('pointermove', onFeedPointerMove);
+      reel.addEventListener('pointerup', onFeedPointerUp);
+      reel.addEventListener('pointercancel', onFeedPointerUp);
+      // 长按快进时系统会弹出放大镜/文本选区。拦下选区和菜单，不拦 pointer 手势本身。
+      ['contextmenu', 'selectstart', 'dragstart'].forEach(function (ev) {
+        reel.addEventListener(ev, function (e) { if (feedActive()) e.preventDefault(); });
+      });
+      reel.addEventListener('touchstart', function (e) {
+        if (!feedActive()) return;
+        if (e.target && e.target.closest && e.target.closest('button, a, input, select, textarea')) return;
+        if (e.cancelable) e.preventDefault();
+      }, { passive: false });
+    }
+    window.addEventListener('resize', function () {
+      if (!$('player').classList.contains('hidden')) syncFeedMode();
+    });
     document.addEventListener('keydown', onPlayerKey);
     document.addEventListener('fullscreenchange', syncFullBtn);
     document.addEventListener('webkitfullscreenchange', syncFullBtn);
-    // iOS 原生视频全屏没有 fullscreenchange，只能靠这组 webkit 事件同步按钮与 state
-    v.addEventListener('webkitbeginfullscreen', function () { state.iosFs = true; syncFullBtn(); });
-    v.addEventListener('webkitendfullscreen', function () { state.iosFs = false; syncFullBtn(); });
   }
 
   function onPlayerKey(e) {
@@ -2698,84 +2817,717 @@
     try { return new URLSearchParams(location.search).get('quality') || ''; } catch (e) { return ''; }
   }
 
-  // ---- 下一集预取 ----
-  // 省掉换集时「上游取址 + 首块解密」的等待（红果那条链通常 300~800ms）。
-  // 边界：只预热到首帧就断开下载，不偷偷吃掉整集流量；最多记 6 条已预热，超出淘汰最旧。
-  var PREFETCH_MAX = 6;
-  var prefetchCache = new Map();
-  var prefetchEl = null;
-  var prefetchKey = '';
+  // 浏览器拦了有声自动播放时静音再试一次。换集/切档被新的 load 打断（AbortError）不是失败。
+  function watchPlay(v, auto) {
+    if (!v) return;
+    if (!v.paused && !v.ended && v.readyState >= 2) return;
+    var keepSound = !v.muted;
+    var p = v.play();
+    if (p && p.catch) p.catch(function (err) {
+      if (!err) return;
+      if (err.name === 'NotAllowedError') {
+        if (v.muted) return;
+        // 先再试一次有声（滑动的手势可能还在）。只有浏览器再次拒绝，才静音把这一集播下去。
+        var again = v.play();
+        var muteFallback = function () {
+          if (!keepSound || v.muted) return;
+          v.muted = true;
+          var retry = v.play();
+          if (retry && retry.catch) retry.catch(function () {});
+          var phone = isPhoneViewport();
+          toast(auto
+            ? (phone ? '已静音自动续播，点一下画面可恢复声音' : '已静音自动续播，按 M 键可恢复声音')
+            : (phone ? '浏览器拦截了有声播放，已静音开始播放，点一下画面可恢复声音' : '浏览器拦截了有声播放，已静音开始播放，按 M 键可恢复声音'));
+        };
+        if (again && again.then) again.then(function () {}, function (err2) {
+          if (err2 && err2.name === 'NotAllowedError') muteFallback();
+        });
+        else muteFallback();
+        return;
+      }
+      if (err.name === 'AbortError') return;
+      if (v.error || err.name === 'NotSupportedError') return;
+      var msg = '播放失败：' + (err.message || '未知错误');
+      toast(msg); showPlayerError(msg + (/[。.!！?？]$/.test(msg) ? '' : '。') + '可尝试换源或重试。');
+    });
+  }
 
-  function prefetchNext() {
+  // ---- 手机短视频：竖滑换集、长按快进、邻集预加载 ----
+  // 只在「触控 + 手机尺寸」上改变交互。桌面鼠标/键盘仍走原来的控件和快捷键。
+  // 预加载窗口：上一集、下一集、再下一集。滑出窗口的元素卸掉 src / hls，避免手机内存一直涨。
+  var PRELOAD_OFFSETS = [-1, 1, 2];
+  var preloadMap = new Map();
+  var feedBoosting = false;
+  var feedBoostRate = 2;
+  var feedAnim = false;
+  var feedGesture = null;
+  var feedTapTimer = null;
+  var feedLastTap = 0;
+  var FEED_HINT_KEY = 'hg_feed_hint';
+
+  function isPhoneViewport() {
+    var coarse = false;
+    try {
+      coarse = window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches;
+    } catch (e) {}
+    if (!coarse) return false;
+    var w = window.innerWidth || 0, h = window.innerHeight || 0;
+    var shortSide = Math.min(w, h);
+    if (shortSide && shortSide <= 520) return true;
+    return w > 0 && w <= 680;
+  }
+  function feedActive() {
+    var p = $('player');
+    return !!(p && p.classList.contains('feed') && !p.classList.contains('hidden'));
+  }
+  function feedMotionMs() {
+    try {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+    } catch (e) {}
+    return 260;
+  }
+  function episodeKey(lineIdx, epIdx) {
+    var d = state.detail;
+    if (!d || epIdx == null || epIdx < 0) return '';
+    return String(state.viewSource || '') + '|' + String(d.id) + '|' + lineIdx + '|' + epIdx;
+  }
+  function preloadEntry(lineIdx, epIdx) {
+    var key = episodeKey(lineIdx, epIdx);
+    return key ? preloadMap.get(key) : null;
+  }
+  function reelPane(slot) {
+    return document.querySelector('.reel-pane[data-slot="' + slot + '"]');
+  }
+  function epTitle(epIdx) {
+    var d = state.detail; if (!d) return '';
+    var line = d.lines[state.line]; if (!line) return '';
+    var ep = line.episodes[epIdx];
+    if (!ep) return '';
+    return ep.name || ('第 ' + (epIdx + 1) + ' 集');
+  }
+  function syncReelLabels() {
+    var prev = $('reelPrevLabel'), next = $('reelNextLabel');
+    if (prev) prev.textContent = epTitle((state.epIdx || 0) - 1);
+    if (next) next.textContent = epTitle((state.epIdx || 0) + 1);
+  }
+  function showReelSpinner(on) {
+    var el = $('reelSpinner'); if (!el) return;
+    if (!isPhoneViewport()) on = false;
+    el.classList.toggle('hidden', !on);
+  }
+  function syncSpinner() {
+    var el = $('reelSpinner'); if (!el) return;
+    if (!feedActive()) { el.classList.add('hidden'); return; }
+    var v = $('video');
+    var pending = !v || v.readyState < 2;
+    el.classList.toggle('hidden', !pending);
+  }
+  function syncPauseIcon() {
+    var el = $('reelPause'); if (!el) return;
+    var v = $('video');
+    var show = feedActive() && !feedAnim && v && v.paused && !v.ended && v.readyState >= 2 && !feedBoosting;
+    el.classList.toggle('hidden', !show);
+  }
+  // 每一集换一个代号。进度条只吃代号还对得上、并且就是 #video 的那个元素。
+  var activeGen = 0;
+  function claimMedia(v) {
+    if (!v) return;
+    activeGen += 1;
+    v._hgGen = activeGen;
+    v._hgProg = null;
+    try { delete v._hgAllowPlay; } catch (e) { v._hgAllowPlay = false; }
+  }
+  function isClaimed(v) {
+    return !!(v && v.id === 'video' && v._hgGen === activeGen);
+  }
+  function syncFeedProgress(v) {
+    if (!feedActive()) return;
+    v = v || $('video');
+    if (!isClaimed(v)) return;
+    var fill = $('reelProgressFill');
+    var time = $('reelTime');
+    if (!fill) return;
+    var dur = (v.duration && isFinite(v.duration)) ? v.duration : 0;
+    var cur = v.currentTime || 0;
+    // 邻集预加载或过期的 timeupdate 会把进度打回去。用户正在拖动时不拦。
+    if (!v.seeking && v._hgProg != null && cur + 0.35 < v._hgProg) return;
+    v._hgProg = cur;
+    fill.style.width = (dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0) + '%';
+    if (time) time.textContent = fmtDur(cur) + ' / ' + fmtDur(dur);
+  }
+  function seekFromClientX(clientX) {
+    var v = $('video');
+    var bar = $('reelScrub') || $('reelProgress');
+    if (!v || !bar || !isFinite(v.duration) || v.duration <= 0) return;
+    var rect = bar.getBoundingClientRect();
+    var ratio = rect.width ? (clientX - rect.left) / rect.width : 0;
+    ratio = Math.max(0, Math.min(1, ratio));
+    try { v.currentTime = ratio * v.duration; } catch (e) {}
+    syncFeedProgress();
+  }
+  function resetTrackTransform() {
+    var track = $('reelTrack'); if (!track) return;
+    track.style.transition = 'none';
+    track.style.transform = '';
+  }
+  function snapTrack(animate) {
+    var track = $('reelTrack'); if (!track) return;
+    // -33.333% 只对「三格竖滑」有意义。桌面轨道没有这三格，留着这段位移会把画面顶出视口。
+    if (!$('player').classList.contains('feed')) { resetTrackTransform(); return; }
+    var ms = animate === false ? 0 : feedMotionMs();
+    track.style.transition = ms ? ('transform ' + ms + 'ms cubic-bezier(.22,.9,.3,1)') : 'none';
+    track.style.transform = 'translate3d(0,-33.3333%,0)';
+  }
+  function setTrackDrag(dy) {
+    var track = $('reelTrack'); var reel = $('reel');
+    if (!track || !reel) return;
+    var h = reel.clientHeight || window.innerHeight || 1;
+    var atStart = (state.epIdx || 0) <= 0 && dy > 0;
+    var line = state.detail && state.detail.lines[state.line];
+    var atEnd = line && (state.epIdx || 0) + 1 >= line.episodes.length && dy < 0;
+    var drag = (atStart || atEnd) ? dy * 0.32 : dy;
+    if (drag > h) drag = h;
+    if (drag < -h) drag = -h;
+    track.style.transition = 'none';
+    track.style.transform = 'translate3d(0, calc(-33.3333% + ' + drag.toFixed(2) + 'px), 0)';
+  }
+  function syncFeedMode() {
+    var p = $('player'); if (!p) return;
+    var on = isPhoneViewport() && !p.classList.contains('hidden');
+    var was = p.classList.contains('feed');
+    p.classList.toggle('feed', on);
+    var v = $('video');
+    if (v) {
+      if (on) v.removeAttribute('controls');
+      else if (!v.hasAttribute('controls')) v.setAttribute('controls', '');
+    }
+    if (on && !was) {
+      snapTrack(false);
+      syncReelLabels();
+      syncFeedProgress();
+      syncPauseIcon();
+      syncSpinner();
+      maybeFeedHint();
+    }
+    if (!on) {
+      stopBoost();
+      resetTrackTransform();
+    }
+    preloadMap.forEach(function (entry) { placePreload(entry); });
+  }
+  function maybeFeedHint() {
+    try {
+      if (localStorage.getItem(FEED_HINT_KEY)) return;
+      localStorage.setItem(FEED_HINT_KEY, '1');
+    } catch (e) { return; }
+    toast('上滑下一集，下滑上一集 · 长按快进 · 双击收藏');
+  }
+  function ensureActiveVideo() {
+    var v = $('video');
+    if (v) return v;
+    v = document.createElement('video');
+    v.id = 'video';
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    v.setAttribute('webkit-playsinline', '');
+    v.preload = 'metadata';
+    v.setAttribute('controls', '');
+    var pane = reelPane('current');
+    if (pane) pane.appendChild(v);
+    rebindVideo(v);
+    if (isPhoneViewport()) v.removeAttribute('controls');
+    return v;
+  }
+  function canPromote(entry) {
+    if (!entry || entry.failed || !entry.el || entry.el.id === 'video') return false;
+    if (entry.hls) return true;
+    return !!(entry.el.currentSrc || entry.el.getAttribute('src'));
+  }
+  function placePreload(entry) {
+    if (!entry || !entry.el || entry.el.id === 'video') return;
+    var offset = entry.epIdx - (state.epIdx || 0);
+    entry.offset = offset;
+    var host = $('reelPool');
+    if (isPhoneViewport() && offset === -1) host = reelPane('prev') || host;
+    else if (isPhoneViewport() && offset === 1) host = reelPane('next') || host;
+    if (!host || entry.el.parentNode === host) return;
+    host.appendChild(entry.el);
+  }
+  function evictPreload(entry) {
+    if (!entry) return;
+    if (entry.el && entry.el.id === 'video') return;
+    if (entry.hls && state.hls !== entry.hls) {
+      try { entry.hls.destroy(); } catch (e) {}
+    }
+    entry.hls = null;
+    if (entry.el) {
+      try { entry.el.pause(); entry.el.removeAttribute('src'); entry.el.load(); } catch (e) {}
+      if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+    }
+    entry.el = null;
+    if (entry.key) preloadMap.delete(entry.key);
+  }
+  function invalidatePreloads() {
+    Array.from(preloadMap.values()).forEach(evictPreload);
+    preloadMap.clear();
+  }
+  function releaseAllPreloads() { invalidatePreloads(); }
+  function parkActiveVideo(old, fromLine, fromEp) {
+    if (!old) return null;
+    var src = old.currentSrc || old.getAttribute('src') || '';
+    if (!src && !state.hls) return null;
+    var key = episodeKey(fromLine, fromEp);
+    if (!key) return null;
+    try { old.pause(); } catch (e) {}
+    old.muted = true;
+    try { old.volume = 0; } catch (e) {}
+    old.setAttribute('aria-hidden', 'true');
+    old.removeAttribute('controls');
+    old.removeAttribute('id');
+    if (videoHook) { videoHook.abort(); videoHook = null; }
+    var entry = {
+      key: key, lineIdx: fromLine, epIdx: fromEp,
+      url: src, type: state.playKind === 'hls' ? 'hls' : (state.hlsMode ? 'hls' : 'mp4'),
+      hlsMode: !!state.hlsMode, hls: state.hls || null, el: old,
+      ready: old.readyState >= 2, failed: false,
+      qualityKey: state.qualityKey || '',
+      qualityInfo: (state.qualityOptions && state.qualityOptions.length)
+        ? { options: state.qualityOptions, note: state.qualityNote || '' } : null,
+      qualityOptions: state.qualityOptions || [],
+      playKind: state.playKind || 'native'
+    };
+    state.hls = null;
+    var prev = preloadMap.get(key);
+    if (prev && prev.el && prev.el !== old) evictPreload(prev);
+    preloadMap.set(key, entry);
+    placePreload(entry);
+    return entry;
+  }
+  function dropEmptyVideo(old) {
+    if (!old || old.id !== 'video') return;
+    var src = old.currentSrc || old.getAttribute('src') || '';
+    if (src || state.hls) return;
+    old.removeAttribute('id');
+    if (videoHook) { videoHook.abort(); videoHook = null; }
+    try { old.pause(); old.removeAttribute('src'); old.load(); } catch (e) {}
+    if (old.parentNode) old.parentNode.removeChild(old);
+  }
+  function promotePreload(entry, startAt, auto, from) {
+    var old = $('video');
+    var neu = entry.el;
+    if (!neu || neu === old) return false;
+    var wantMuted = !!(old && old.muted);
+    var wantVol = (old && isFinite(old.volume)) ? old.volume : 1;
+    if (from) parkActiveVideo(old, from.line, from.ep);
+    dropEmptyVideo($('video') === neu ? null : $('video'));
+    preloadMap.delete(entry.key);
+    var keptHls = entry.hls || null;
+    entry.hls = null;
+    entry.el = null;
+    neu.removeAttribute('aria-hidden');
+    neu.id = 'video';
+    neu.muted = wantMuted;
+    try { neu.volume = wantMuted ? 0 : wantVol; } catch (e) {}
+    var pane = reelPane('current');
+    if (pane && neu.parentNode !== pane) pane.appendChild(neu);
+    if (keptHls) {
+      state.hls = keptHls;
+      state.hlsMode = true;
+      state.hlsLive = true;
+      try { if (keptHls.config) keptHls.config.maxBufferLength = 30; } catch (e) {}
+      bindHlsEvents(keptHls);
+    } else {
+      state.hls = null;
+      state.hlsMode = !!entry.hlsMode;
+      state.hlsLive = !!entry.hlsMode;
+    }
+    if (entry.qualityInfo && entry.qualityInfo.options && entry.qualityInfo.options.length) {
+      applyQualityOptions(entry.qualityInfo);
+    }
+    if (entry.qualityKey) state.qualityKey = entry.qualityKey;
+    state.playKind = (entry.type === 'hls' && !(entry.qualityInfo && entry.qualityInfo.options && entry.qualityInfo.options.length))
+      ? 'hls' : (entry.playKind || 'native');
+    state.hevcFallback = state.qualityKey === 'compat';
+    state.pendingSeek = Math.max(0, Math.floor(startAt || 0));
+    state.silentSeek = false;
+    state.switchAt = Date.now();
+    state.switchRetried = false;
+    state.switching = false;
+    state.busyRetries = 0;
+    state.autoNextLatch = false;
+    updateResBadge();
+    updateQualityBtn();
+    hidePlayerError();
+    clearDiag();
+    if (neu.readyState < 2) armPlayWatchdog();
+    rebindVideo(neu);
+    $('player').classList.remove('hidden');
+    syncFeedMode();
+    applyRate();
+    if (state.pendingSeek > 3 && isFinite(neu.duration) && state.pendingSeek < neu.duration - 3) {
+      try { neu.currentTime = state.pendingSeek; } catch (e) {}
+    }
+    state.pendingSeek = 0;
+    claimMedia(neu);
+    watchPlay(neu, auto);
+    syncPreloadWindow();
+    syncFeedProgress(neu);
+    syncPauseIcon();
+    syncSpinner();
+    return true;
+  }
+  function tryPromoteEpisode(lineIdx, epIdx, startAt, auto, from) {
+    if (!isPhoneViewport()) return false;
+    var entry = preloadEntry(lineIdx, epIdx);
+    if (!canPromote(entry)) return false;
+    return promotePreload(entry, startAt, auto, from);
+  }
+  // 和 openPlayer 选同一条地址：用户写在地址栏里的清晰度优先，否则本机可播的最高档。
+  function resolvePreloadChoice(apiResult) {
+    var url = apiResult.url;
+    var type = apiResult.type || '';
+    var qi = apiResult.quality;
+    var mapped = [];
+    if (qi && Array.isArray(qi.options)) {
+      mapped = qi.options.map(function (o) {
+        return {
+          key: o.key, label: o.label, height: o.height,
+          codec: String(o.codec || '').toLowerCase(), url: o.url || '',
+          transcode: o.transcode === true, hls: o.hls === true, levelIndex: null
+        };
+      });
+    }
+    var playKind = type === 'hls' && !mapped.length ? 'hls' : 'native';
+    var qualityKey = '';
+    var chosen = null;
+    if (mapped.length) {
+      var wantQ = urlQualityParam();
+      var owned = !state.qParamOwner || state.qParamOwner === dramaKey();
+      if (wantQ && owned) {
+        for (var i = 0; i < mapped.length; i++) if (mapped[i].key === wantQ) chosen = mapped[i];
+        if (chosen && (qualityGate(chosen, mapped).dead || !chosen.url)) chosen = null;
+      }
+      if (!chosen && playKind === 'native') {
+        var playable = defaultPlayableOption(mapped);
+        // 与 openPlayer 一致：普通「自动」档先不动地址；自动档本身是转码清单时才换。
+        if (playable && playable.url && (playable.key !== 'auto' || playable.hls)) chosen = playable;
+      }
+      if (chosen && chosen.url) {
+        url = chosen.url;
+        qualityKey = chosen.key || '';
+      }
+    }
+    if (playKind === 'native' && !qualityKey) {
+      var p0 = defaultPlayableOption(mapped);
+      if (p0) {
+        qualityKey = p0.key || '';
+        if (p0.url) { url = p0.url; chosen = chosen || p0; }
+      }
+    }
+    var hlsMode = playKind === 'hls' || !!(chosen && chosen.hls) || /\.m3u8(\?|$)/.test(String(url));
+    return { url: url, type: type, hlsMode: hlsMode, qualityKey: qualityKey, playKind: playKind, qualityInfo: qi || null, qualityOptions: mapped };
+  }
+  function mountPreload(entry) {
+    if (!entry || entry.el || !entry.url) return;
+    var el = document.createElement('video');
+    el.preload = 'auto';
+    el.muted = true;
+    el.playsInline = true;
+    el.setAttribute('playsinline', '');
+    el.setAttribute('webkit-playsinline', '');
+    el.setAttribute('aria-hidden', 'true');
+    el.setAttribute('tabindex', '-1');
+    try { el.disablePictureInPicture = true; } catch (e) {}
+    entry.el = el;
+    placePreload(entry);
+    var playUrl = authUrl(entry.url);
+    entry.authedUrl = playUrl;
+    function markReady() {
+      entry.ready = el.readyState >= 2;
+      // 已经提升成当前集的元素不能再被预加载逻辑暂停或拉回开头，否则进度条会来回跳。
+      if (el.id === 'video' || el._hgAllowPlay) return;
+      try { el.pause(); } catch (e) {}
+      // 预览停在开头。只在已经缓冲的范围内回退，避免把刚下到的数据丢掉。
+      if (el.currentTime > 0.05 && el.currentTime < 1.5) {
+        try { el.currentTime = 0; } catch (e) {}
+      }
+    }
+    el.addEventListener('loadeddata', markReady);
+    // 手机同时只能顺畅解一路。预加载一旦真正播起来就立刻停，免得和当前集抢时钟。
+    el.addEventListener('playing', function () {
+      if (el.id === 'video' || el._hgAllowPlay) return;
+      try { el.pause(); } catch (e) {}
+    });
+    el.addEventListener('progress', function () {
+      if (el.id === 'video') return;
+      try {
+        if (!el.buffered || !el.buffered.length) return;
+        if (el.buffered.end(el.buffered.length - 1) >= 8) el.preload = 'metadata';
+      } catch (e) {}
+    });
+    if (entry.hlsMode && window.Hls && window.Hls.isSupported()) {
+      entry.hls = attachHls(playUrl, el);
+      if (entry.hls) {
+        entry.hls.on(window.Hls.Events.MANIFEST_PARSED, function () {
+          if (state.hls === entry.hls || el.id === 'video') return;
+          var kick = el.play();
+          if (kick && kick.catch) kick.catch(function () {});
+        });
+        entry.hls.on(window.Hls.Events.ERROR, function (_e, data) {
+          if (!data || !data.fatal) return;
+          if (state.hls === entry.hls || el.id === 'video') return;
+          entry.failed = true;
+          evictPreload(entry);
+        });
+      }
+    } else {
+      el.src = playUrl;
+      var kick = el.play();
+      if (kick && kick.catch) kick.catch(function () {});
+    }
+  }
+  function startPreload(target) {
+    var d = state.detail; if (!d) return;
+    var line = d.lines[target.lineIdx]; if (!line) return;
+    var ep = line.episodes[target.epIdx]; if (!ep) return;
+    var key = episodeKey(target.lineIdx, target.epIdx);
+    if (!key || preloadMap.has(key)) return;
+    var entry = {
+      key: key, lineIdx: target.lineIdx, epIdx: target.epIdx,
+      ready: false, failed: false, url: '', el: null, hls: null
+    };
+    preloadMap.set(key, entry);
+    entry.promise = api('/api/play', { source: state.viewSource, flag: line.flag, id: ep.id }).then(function (r) {
+      if (preloadMap.get(key) !== entry) return null;
+      if ($('player').classList.contains('hidden')) { evictPreload(entry); return null; }
+      if (!r || !r.url) { entry.failed = true; return null; }
+      var choice = resolvePreloadChoice(r);
+      entry.url = choice.url;
+      entry.type = r.type || choice.type;
+      entry.hlsMode = choice.hlsMode;
+      entry.qualityKey = choice.qualityKey;
+      entry.qualityInfo = r.quality || null;
+      entry.qualityOptions = choice.qualityOptions;
+      entry.playKind = choice.playKind;
+      mountPreload(entry);
+      return r;
+    }).catch(function () {
+      if (preloadMap.get(key) === entry) entry.failed = true;
+      return null;
+    });
+  }
+  function syncPreloadWindow() {
     if ($('player').classList.contains('hidden')) return;
+    if (navigator.connection && navigator.connection.saveData) return;
     var d = state.detail; if (!d) return;
     var line = d.lines[state.line]; if (!line) return;
-    var next = line.episodes[(state.epIdx || 0) + 1]; if (!next) return;
-    // 用户开了省流量模式就别预取。
-    if (navigator.connection && navigator.connection.saveData) return;
-    var key = state.viewSource + '|' + d.id + '|' + state.line + '|' + ((state.epIdx || 0) + 1);
-    // 缓存项带 url：命中前校验确实是这一路的地址，避免旧记录挡住真正需要的预取。
-    var cached = prefetchCache.get(key);
-    if ((cached && cached.url) || prefetchKey === key) return;
-    prefetchKey = key;
-    api('/api/play', { source: state.viewSource, flag: line.flag, id: next.id }).then(function (r) {
-      // 取址失败要回滚占位 key，否则这一集之后永远被 prefetchKey === key 拦住，再也预取不到。
-      if (!r || !r.url) { if (prefetchKey === key) prefetchKey = ''; return; }
-      // HLS 要 hls.js 解析清单才有意义，这里只预热直链（红果/西饭/牛牛这类 mp4）。
-      if (r.type === 'hls') { prefetchCache.set(key, { at: Date.now(), url: r.url }); if (prefetchKey === key) prefetchKey = ''; trimPrefetch(); return; }
-      // 预取要用「下一集真正会播的那一档」：默认 auto 是 HEVC，不支持 HEVC 的浏览器预热了也播不了。
-      var purl = r.url;
-      if (r.quality && Array.isArray(r.quality.options) && r.quality.options.length) {
-        var pick = null;
-        if (state.qualityKey) {
-          pick = r.quality.options.filter(function (o) { return o.key === state.qualityKey; })[0] || null;
-        }
-        if (!pick && !hevcSupported()) {
-          pick = r.quality.options.filter(function (o) { return o.codec === 'h264'; })[0] || null;
-        }
-        if (pick && pick.url) purl = pick.url;
+    var cur = state.epIdx || 0;
+    var want = {};
+    PRELOAD_OFFSETS.forEach(function (off) {
+      var idx = cur + off;
+      if (idx < 0 || idx >= line.episodes.length) return;
+      var key = episodeKey(state.line, idx);
+      if (key) want[key] = { lineIdx: state.line, epIdx: idx };
+    });
+    Array.from(preloadMap.keys()).forEach(function (k) {
+      if (!want[k]) evictPreload(preloadMap.get(k));
+    });
+    Object.keys(want).forEach(function (k) {
+      var ex = preloadMap.get(k);
+      if (ex) {
+        if (ex.failed && !ex.el) { preloadMap.delete(k); startPreload(want[k]); return; }
+        placePreload(ex);
+        return;
       }
-      // 转码档是 HLS 清单：<video> 预取不认 m3u8，预热没意义，直接记成已处理。
-      if (/\.m3u8(\?|$)/.test(String(purl))) { prefetchCache.set(key, { at: Date.now(), url: purl }); if (prefetchKey === key) prefetchKey = ''; trimPrefetch(); return; }
-      var playUrl = authUrl(purl);
-      // P2(W-07)：每次预取用独立的一次性监听，闭包捕获本次 key（原实现共用 _hgKey 会串键）。
-      if (prefetchEl) {
-        try { prefetchEl.removeAttribute('src'); prefetchEl.load(); if (prefetchEl.parentNode) prefetchEl.parentNode.removeChild(prefetchEl); } catch (e) {}
-        prefetchEl = null;
+      startPreload(want[k]);
+    });
+    syncReelLabels();
+  }
+  // 在用户手势还没结束时，把下一集的静音状态改成和当前集一样并开始播。
+  // 真正的换元素也在这次调用栈里完成，避免过渡动画结束后 play() 被当成无手势而静音。
+  function armIncomingSound(lineIdx, epIdx) {
+    var entry = preloadEntry(lineIdx, epIdx);
+    var cur = $('video');
+    if (!entry || !entry.el || !cur || entry.el === cur) return;
+    entry.el._hgAllowPlay = true;
+    entry.el.muted = !!cur.muted;
+    try { entry.el.volume = cur.muted ? 0 : (isFinite(cur.volume) ? cur.volume : 1); } catch (e) {}
+    try { entry.el.playbackRate = feedBoosting ? feedBoostRate : (state.rate || 1); } catch (e) {}
+    var p = entry.el.play();
+    if (p && p.catch) p.catch(function () {});
+  }
+  function animateCommit(dir, auto) {
+    if (feedAnim) return;
+    var line = state.detail && state.detail.lines[state.line];
+    if (!line) return;
+    var target = (state.epIdx || 0) + dir;
+    if (target < 0 || target >= line.episodes.length) {
+      snapTrack(true);
+      toast(dir > 0 ? '已经是最后一集' : '已经是第一集');
+      return;
+    }
+    var lineIdx = state.line;
+    if (!auto) armIncomingSound(lineIdx, target);
+    // 手指已经跟完了。换集和 play() 放在松手的调用栈里，声音才不会丢。
+    playEpisode(lineIdx, target, 0, !!auto);
+    snapTrack(true);
+  }
+  function startBoost() {
+    var v = $('video'); if (!v) return;
+    feedBoostRate = (state.rate || 1) >= 2 ? 3 : 2;
+    feedBoosting = true;
+    if (v.paused) {
+      var pr = v.play();
+      if (pr && pr.catch) pr.catch(function () {});
+    }
+    applyRate();
+    var hint = $('speedHint');
+    if (hint) {
+      hint.textContent = rateLabel(feedBoostRate) + ' 快进中';
+      hint.classList.remove('hidden');
+    }
+    syncPauseIcon();
+  }
+  function stopBoost() {
+    if (!feedBoosting) {
+      var hint0 = $('speedHint');
+      if (hint0) hint0.classList.add('hidden');
+      return;
+    }
+    feedBoosting = false;
+    applyRate();
+    var hint = $('speedHint');
+    if (hint) hint.classList.add('hidden');
+    syncPauseIcon();
+  }
+  function togglePlayFromTap() {
+    var v = $('video'); if (!v) return;
+    // 自动播放被静音时，第一下先恢复声音，不要直接暂停。
+    if (v.muted && !v.paused && !v.ended) {
+      v.muted = false;
+      try { if (!v.volume) v.volume = 1; } catch (e) {}
+      return;
+    }
+    if (v.paused || v.ended) {
+      if (v.muted) v.muted = false;
+      var pr = v.play();
+      if (pr && pr.catch) pr.catch(function () {});
+    } else v.pause();
+    syncPauseIcon();
+  }
+  function showHeart(x, y) {
+    var reel = $('reel'), heart = $('reelHeart');
+    if (!reel || !heart) return;
+    var rect = reel.getBoundingClientRect();
+    heart.style.left = (x - rect.left) + 'px';
+    heart.style.top = (y - rect.top) + 'px';
+    heart.classList.add('hidden');
+    void heart.offsetWidth;
+    heart.classList.remove('hidden');
+  }
+  function onDoubleTapFavorite(x, y) {
+    showHeart(x, y);
+    var d = state.detail; if (!d) return;
+    // 双击只负责收藏。已经收藏过就播心形，不在这里取消，避免连点把收藏清掉。
+    if (isFav(state.viewSource, d.id)) return;
+    toggleFav(detailItem());
+  }
+  function registerFeedTap(x, y, inScrub) {
+    if (inScrub) { seekFromClientX(x); return; }
+    var now = Date.now();
+    if (now - feedLastTap < 280) {
+      if (feedTapTimer) { clearTimeout(feedTapTimer); feedTapTimer = null; }
+      feedLastTap = 0;
+      onDoubleTapFavorite(x, y);
+      return;
+    }
+    feedLastTap = now;
+    if (feedTapTimer) clearTimeout(feedTapTimer);
+    feedTapTimer = setTimeout(function () {
+      feedTapTimer = null;
+      feedLastTap = 0;
+      togglePlayFromTap();
+    }, 280);
+  }
+  function onFeedPointerDown(e) {
+    if (!feedActive() || feedAnim) return;
+    // 桌面没有 .feed，鼠标不会进到这里。手机模拟器有时仍报 pointerType=mouse，所以不按指针类型过滤。
+    if (e.target && e.target.closest && e.target.closest('.player-bar, .player-error, button, a, input, select, textarea, .qmenu')) return;
+    if (feedGesture) return;
+    var reel = $('reel');
+    feedGesture = {
+      id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY,
+      t0: Date.now(), mode: 'pending',
+      inScrub: !!(e.target && e.target.closest && e.target.closest('#reelProgress')),
+      timer: null
+    };
+    try { if (reel) reel.setPointerCapture(e.pointerId); } catch (err) {}
+    var g = feedGesture;
+    g.timer = setTimeout(function () {
+      if (!feedGesture || feedGesture !== g || g.mode !== 'pending' || g.inScrub) return;
+      if (Math.abs(g.x - g.x0) > 12 || Math.abs(g.y - g.y0) > 12) return;
+      g.mode = 'boost';
+      startBoost();
+    }, 360);
+  }
+  function onFeedPointerMove(e) {
+    var g = feedGesture;
+    if (!g || e.pointerId !== g.id) return;
+    g.x = e.clientX; g.y = e.clientY;
+    var dx = g.x - g.x0, dy = g.y - g.y0;
+    if (g.mode === 'pending') {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      if (g.timer) { clearTimeout(g.timer); g.timer = null; }
+      if (g.inScrub && Math.abs(dx) >= Math.abs(dy)) {
+        g.mode = 'scrub';
+        var bar = $('reelProgress'); if (bar) bar.classList.add('scrubbing');
+        seekFromClientX(g.x);
+        return;
       }
-      var el = document.createElement('video');
-      el.preload = 'auto';
-      el.muted = true;
-      el.playsInline = true;
-      el.setAttribute('aria-hidden', 'true');
-      el.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
-      el.addEventListener('loadeddata', function () {
-        try { el.removeAttribute('src'); el.load(); if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
-        if (prefetchEl === el) prefetchEl = null;
-        prefetchCache.set(key, { at: Date.now(), url: playUrl });
-        if (prefetchKey === key) prefetchKey = '';
-        trimPrefetch();
-      }, { once: true });
-      prefetchEl = el;
-      document.body.appendChild(el);
-      el.src = playUrl;
-    }).catch(function () { if (prefetchKey === key) prefetchKey = ''; });
+      if (Math.abs(dy) > Math.abs(dx)) {
+        g.mode = 'swipe';
+        setTrackDrag(dy);
+        return;
+      }
+      g.mode = 'ignore';
+      return;
+    }
+    if (g.mode === 'scrub') { seekFromClientX(g.x); return; }
+    if (g.mode === 'swipe') setTrackDrag(dy);
   }
-  function trimPrefetch() {
-    while (prefetchCache.size > PREFETCH_MAX) prefetchCache.delete(prefetchCache.keys().next().value);
-  }
-  function stopPrefetch() {
-    prefetchKey = '';
-    if (!prefetchEl) return;
-    try { prefetchEl.removeAttribute('src'); prefetchEl.load(); if (prefetchEl.parentNode) prefetchEl.parentNode.removeChild(prefetchEl); } catch (e) {}
-    prefetchEl = null;
+  function onFeedPointerUp(e) {
+    var g = feedGesture;
+    if (!g || e.pointerId !== g.id) return;
+    feedGesture = null;
+    if (g.timer) clearTimeout(g.timer);
+    var bar = $('reelProgress'); if (bar) bar.classList.remove('scrubbing');
+    if (g.mode === 'boost') { stopBoost(); return; }
+    if (g.mode === 'scrub') { seekFromClientX(g.x); return; }
+    if (g.mode === 'swipe') {
+      var dy = g.y - g.y0;
+      var dt = Math.max(1, Date.now() - g.t0);
+      var reel = $('reel');
+      var h = (reel && reel.clientHeight) || window.innerHeight || 1;
+      var velocity = dy / dt;
+      var commit = Math.abs(dy) > h * 0.18 || (Math.abs(dy) > 56 && Math.abs(velocity) > 0.55);
+      if (!commit) { snapTrack(true); return; }
+      animateCommit(dy < 0 ? 1 : -1, false);
+      return;
+    }
+    if (g.mode === 'ignore') return;
+    if (Date.now() - g.t0 > 420) return;
+    if (Math.abs(g.x - g.x0) > 12 || Math.abs(g.y - g.y0) > 12) return;
+    registerFeedTap(g.x, g.y, g.inScrub);
   }
 
   function closePlayer() {
+    stopBoost();
+    feedAnim = false;
+    feedGesture = null;
     // 先退全屏：全屏元素留在 top layer 时只隐藏 .player，会留下一块不可交互的黑屏。
     if (isFullscreen()) (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document);
     var v = $('video');
-    if (v.webkitDisplayingFullscreen && v.webkitExitFullscreen) { try { v.webkitExitFullscreen(); } catch (e) {} }
+    if (v && v.webkitDisplayingFullscreen && v.webkitExitFullscreen) { try { v.webkitExitFullscreen(); } catch (e) {} }
     // 关掉播放器后，仍在路上的 /api/play 响应不应再把播放器打开。
     playSeq++;
     // P2(W-09)：让起播后 1.2s 的「后台补档」定时器失效，避免关闭后仍重新取流、写回 ?quality=。
@@ -2784,14 +3536,20 @@
     hidePlayerError();
     clearDiag();
     state.autoNextLatch = false;
-    saveProgress(v);
-    try { v.pause(); } catch (e) {}
-    v.removeAttribute('src'); try { v.load(); } catch (e) {}
-    stopPrefetch();
+    if (v) {
+      saveProgress(v);
+      try { v.pause(); } catch (e) {}
+      v.removeAttribute('src'); try { v.load(); } catch (e) {}
+    }
+    releaseAllPreloads();
     destroyHls();
     state.hlsMode = false;
     state.switching = false;
+    snapTrack(false);
     $('player').classList.add('hidden');
+    syncFeedMode();
+    showReelSpinner(false);
+    syncPauseIcon();
   }
 
   function nextEpisode(opts) {
@@ -2804,7 +3562,15 @@
       if (!auto) toast('已经是最后一集');
       return;
     }
-    playEpisode(state.line, next, 0, auto);
+    var v = $('video');
+    // 自动连播和画中画都沿用当前这个已经在播的元素，不走「提升预加载元素」那条会静音的路。
+    if (auto || isPipVideo(v)) {
+      playEpisode(state.line, next, 0, auto);
+      if (feedActive()) snapTrack(false);
+      return;
+    }
+    if (feedActive()) { animateCommit(1, false); return; }
+    playEpisode(state.line, next, 0, false);
   }
 
   function showError(e) {
@@ -3142,10 +3908,8 @@
   });
   $('btnPlayerSwitch').addEventListener('click', switchPlaybackSource);
   $('btnPlayerFallback').addEventListener('click', useFallback);
-  $('video').addEventListener('error', onVideoError);
-  // 只绑 playing：loadedmetadata 只代表「元数据到了」，此时解码仍可能失败，
-  // 绑在它上面会把刚弹出的错误横幅立刻收起来（黑屏却没有任何提示）。
-  $('video').addEventListener('playing', hidePlayerError);
+  // error / playing 在 rebindVideo 里跟当前 <video> 走。playing 才收起错误横幅：
+  // loadedmetadata 只代表「元数据到了」，此时解码仍可能失败，绑在它上面会把横幅立刻收起来。
   $('btnNext').addEventListener('click', nextEpisode);
   $('btnAutoNext').addEventListener('click', toggleAutoNext);
   // ---- 顶栏二级菜单（账号 / 历史 / 源）----
@@ -3221,7 +3985,7 @@
   // 转回桌面宽度时清掉抽屉状态，避免 body 滚动锁残留
   var mqMobile = (typeof window !== 'undefined' && window.matchMedia) ? window.matchMedia('(max-width: 680px)') : null;
   if (mqMobile) {
-    var onMobileMq = function () { if (!mqMobile.matches) closeMobileMenu(); updateQualityBtn(); };
+    var onMobileMq = function () { if (!mqMobile.matches) closeMobileMenu(); updateQualityBtn(); syncFeedMode(); };
     if (mqMobile.addEventListener) mqMobile.addEventListener('change', onMobileMq);
     else if (mqMobile.addListener) mqMobile.addListener(onMobileMq);
   }
@@ -3309,7 +4073,21 @@
       };
     },
     diagnose: { probe: probeStream, classify: classifyPlayback, report: diagnoseAndReport, arm: armStallCheck, clear: clearDiag },
-    prefetch: { cache: prefetchCache, el: function () { return prefetchEl; }, next: prefetchNext, trim: trimPrefetch }
+    prefetch: {
+      cache: preloadMap,
+      el: function () { return null; },
+      next: syncPreloadWindow,
+      trim: syncPreloadWindow,
+      entries: function () {
+        return Array.from(preloadMap.values()).map(function (e) {
+          return {
+            key: e.key, ep: e.epIdx, ready: !!e.ready, failed: !!e.failed,
+            url: e.url || '', hls: !!e.hls, rs: e.el ? e.el.readyState : -1
+          };
+        });
+      }
+    },
+    feed: { active: feedActive, phone: isPhoneViewport }
   };
   }
 
